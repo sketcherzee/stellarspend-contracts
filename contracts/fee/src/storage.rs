@@ -94,7 +94,10 @@ pub fn write_min_fee(env: &Env, min_fee: i128) {
 }
 
 pub fn read_min_fee(env: &Env) -> i128 {
-    env.storage().instance().get(&DataKey::MinFee).unwrap_or(DEFAULT_MIN_FEE)
+    env.storage()
+        .instance()
+        .get(&DataKey::MinFee)
+        .unwrap_or(DEFAULT_MIN_FEE)
 }
 
 pub fn write_max_fee(env: &Env, max_fee: i128) {
@@ -102,7 +105,10 @@ pub fn write_max_fee(env: &Env, max_fee: i128) {
 }
 
 pub fn read_max_fee(env: &Env) -> i128 {
-    env.storage().instance().get(&DataKey::MaxFee).unwrap_or(DEFAULT_MAX_FEE)
+    env.storage()
+        .instance()
+        .get(&DataKey::MaxFee)
+        .unwrap_or(DEFAULT_MAX_FEE)
 }
 
 pub fn write_locked(env: &Env, is_locked: bool) {

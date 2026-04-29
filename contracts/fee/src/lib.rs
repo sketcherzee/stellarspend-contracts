@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+mod auth;
 mod decay;
 mod escrow;
 mod events;
@@ -9,13 +10,13 @@ mod reconciliation;
 mod storage;
 mod utils;
 mod validation;
-mod auth;
 
 #[cfg(test)]
 mod test;
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
 
+use crate::auth::require_admin;
 use crate::decay::calculate_fee_decay;
 use crate::escrow::{
     collect_batch_to_escrow, collect_to_escrow, release_cycle_fees, rollover_cycle_fees,
@@ -32,10 +33,12 @@ use crate::storage::{
     DEFAULT_FEE_BPS, DEFAULT_MIN_FEE,
 };
 pub use crate::storage::{BatchFeeResult, DataKey, MAX_BATCH_SIZE, MAX_FEE_BPS};
-use crate::utils::format_amount;
-use crate::auth::require_admin;
 use crate::utils::compute_fee;
-use crate::validation::{validate_fee_bps_or_panic, validate_min_fee_or_panic, validate_max_fee_or_panic, validate_amount_positive_or_panic};
+use crate::utils::format_amount;
+use crate::validation::{
+    validate_amount_positive_or_panic, validate_fee_bps_or_panic, validate_max_fee_or_panic,
+    validate_min_fee_or_panic,
+};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]

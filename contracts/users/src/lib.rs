@@ -8,13 +8,10 @@ use soroban_sdk::{
 mod storage;
 
 pub use storage::{
-    
     add_user, deactivate_user as storage_deactivate_user, get_all_users, get_default_currency,
-    get_user_count as storage_get_user_count, is_user_active, reset_user_data,
-    set_default_currency, user_exists,
-    get_user_active_status, set_user_active_status,
-    get_user_currency, set_user_currency,
-    get_user_last_login, set_user_last_login,
+    get_user_active_status, get_user_count as storage_get_user_count, get_user_currency,
+    get_user_last_login, is_user_active, reset_user_data, set_default_currency,
+    set_user_active_status, set_user_currency, set_user_last_login, user_exists,
 };
 
 #[cfg(test)]
@@ -51,10 +48,8 @@ impl UsersContract {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
 
-        env.events().publish(
-            (symbol_short!("users"), symbol_short!("init")),
-            admin,
-        );
+        env.events()
+            .publish((symbol_short!("users"), symbol_short!("init")), admin);
     }
 
     /// Register a new user.
@@ -85,10 +80,8 @@ impl UsersContract {
             // ── Issue: Emit event when user registers ────────────────────
             // Publish a structured event so off-chain indexers and other
             // contracts can react to new registrations.
-            env.events().publish(
-                (symbol_short!("users"), symbol_short!("reg")),
-                user,
-            );
+            env.events()
+                .publish((symbol_short!("users"), symbol_short!("reg")), user);
         }
 
         is_new
@@ -129,10 +122,8 @@ impl UsersContract {
         let success = reset_user_data(&env, user.clone());
 
         if success {
-            env.events().publish(
-                (symbol_short!("users"), symbol_short!("reset")),
-                user,
-            );
+            env.events()
+                .publish((symbol_short!("users"), symbol_short!("reset")), user);
         }
 
         success
@@ -166,10 +157,8 @@ impl UsersContract {
         let success = storage_deactivate_user(&env, user.clone());
 
         if success {
-            env.events().publish(
-                (symbol_short!("users"), symbol_short!("deact")),
-                user,
-            );
+            env.events()
+                .publish((symbol_short!("users"), symbol_short!("deact")), user);
         }
 
         success
@@ -207,10 +196,8 @@ impl UsersContract {
         }
 
         if updated {
-            env.events().publish(
-                (symbol_short!("users"), symbol_short!("profile")),
-                user,
-            );
+            env.events()
+                .publish((symbol_short!("users"), symbol_short!("profile")), user);
         }
 
         updated
