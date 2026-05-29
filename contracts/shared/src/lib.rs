@@ -5,6 +5,7 @@ use soroban_sdk::{Env, String, Address, contracttype};
 pub mod utils;
 pub mod errors;
 pub mod auth;
+pub mod sanitizer;
 
 pub use errors::SharedError;
 
