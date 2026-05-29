@@ -25,7 +25,7 @@
 mod types;
 mod validation;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
 
 pub use crate::types::{
     BatchGoalMetrics, BatchGoalResult, BatchMilestoneMetrics, BatchMilestoneResult, DataKey,
@@ -48,6 +48,12 @@ pub enum SavingsGoalError {
     EmptyBatch = 4,
     /// Batch exceeds maximum size
     BatchTooLarge = 5,
+    /// Insufficient balance for withdrawal
+    InsufficientBalance = 6,
+    /// Goal is not active
+    GoalNotActive = 7,
+    /// Invalid goal name
+    InvalidGoalName = 8,
 }
 
 impl From<SavingsGoalError> for soroban_sdk::Error {
@@ -498,6 +504,118 @@ impl SavingsGoalsContract {
             .set(&DataKey::GoalMilestonesPercent(goal_id), &triggered);
     }
     // ...existing code...
+
+    /// Partially withdraws funds from a savings goal.
+    ///
+    /// Updates the remaining current amount and goal completion state.
+    /// The caller must be the goal owner.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `caller` - The address requesting the withdrawal (must be goal owner)
+    /// * `goal_id` - The ID of the goal to withdraw from
+    /// * `amount` - The amount to withdraw (must be > 0, <= current_amount)
+    pub fn partial_withdraw(env: Env, caller: Address, goal_id: u64, amount: i128) {
+        caller.require_auth();
+
+        if amount <= 0 {
+            panic_with_error!(&env, SavingsGoalError::InvalidBatch);
+        }
+
+        let mut goal: SavingsGoal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Goal(goal_id))
+            .unwrap_or_else(|| {
+                panic_with_error!(&env, SavingsGoalError::InvalidBatch)
+            });
+
+        // Verify caller is the goal owner
+        if goal.user != caller {
+            panic_with_error!(&env, SavingsGoalError::Unauthorized);
+        }
+
+        // Verify goal is active
+        if !goal.is_active {
+            panic_with_error!(&env, SavingsGoalError::GoalNotActive);
+        }
+
+        // Verify sufficient balance
+        if amount > goal.current_amount {
+            panic_with_error!(&env, SavingsGoalError::InsufficientBalance);
+        }
+
+        // Update current amount
+        goal.current_amount = goal.current_amount.checked_sub(amount).unwrap_or(0);
+
+        // Update completion status
+        let was_complete = goal.is_complete;
+        goal.is_complete = goal.current_amount >= goal.target_amount;
+
+        // If goal was complete but is no longer, it stays active
+        if was_complete && !goal.is_complete {
+            goal.is_active = true;
+        }
+
+        // Store updated goal
+        env.storage()
+            .persistent()
+            .set(&DataKey::Goal(goal_id), &goal);
+
+        // Update milestones if progress changed
+        Self::check_and_emit_milestones(&env, goal_id);
+
+        // Emit withdrawal event
+        GoalEvents::partial_withdrawal(
+            &env,
+            goal_id,
+            &caller,
+            amount,
+            goal.current_amount,
+        );
+    }
+
+    /// Updates the name of an existing savings goal.
+    ///
+    /// The caller must be the goal owner. Emits a rename event on success.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `caller` - The address requesting the rename (must be goal owner)
+    /// * `goal_id` - The ID of the goal to rename
+    /// * `new_name` - The new name for the goal
+    pub fn update_goal_name(env: Env, caller: Address, goal_id: u64, new_name: Symbol) {
+        caller.require_auth();
+
+        // Validate new name is not empty
+        if new_name.len() == 0 {
+            panic_with_error!(&env, SavingsGoalError::InvalidGoalName);
+        }
+
+        let mut goal: SavingsGoal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Goal(goal_id))
+            .unwrap_or_else(|| {
+                panic_with_error!(&env, SavingsGoalError::InvalidBatch)
+            });
+
+        // Verify caller is the goal owner
+        if goal.user != caller {
+            panic_with_error!(&env, SavingsGoalError::Unauthorized);
+        }
+
+        let old_name = goal.goal_name.clone();
+        goal.goal_name = new_name.clone();
+
+        // Store updated goal
+        env.storage()
+            .persistent()
+            .set(&DataKey::Goal(goal_id), &goal);
+
+        // Emit rename event
+        GoalEvents::goal_renamed(&env, goal_id, &old_name, &new_name);
+    }
 
     /// Retrieves a savings goal by ID.
     ///

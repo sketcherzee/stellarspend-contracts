@@ -315,6 +315,7 @@ impl GoalEvents {
             ),
         );
     }
+
     /// Event emitted when a milestone percentage is achieved automatically.
     pub fn milestone_achieved_percent(env: &Env, goal_id: u64, milestone_percent: u32) {
         let topics = (symbol_short!("milestone"), symbol_short!("auto"), goal_id);
@@ -342,5 +343,25 @@ impl GoalEvents {
         let topics = (symbol_short!("milestone"), symbol_short!("done"));
         env.events()
             .publish(topics, (batch_id, successful, failed, total_percentage));
+    }
+
+    /// Event emitted when a partial withdrawal is made from a goal.
+    pub fn partial_withdrawal(
+        env: &Env,
+        goal_id: u64,
+        user: &Address,
+        amount: i128,
+        remaining: i128,
+    ) {
+        let topics = (symbol_short!("goal"), symbol_short!("withdraw"));
+        env.events()
+            .publish(topics, (goal_id, user.clone(), amount, remaining));
+    }
+
+    /// Event emitted when a goal is renamed.
+    pub fn goal_renamed(env: &Env, goal_id: u64, old_name: &Symbol, new_name: &Symbol) {
+        let topics = (symbol_short!("goal"), symbol_short!("renamed"), goal_id);
+        env.events()
+            .publish(topics, (old_name.clone(), new_name.clone()));
     }
 }
