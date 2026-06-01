@@ -463,6 +463,149 @@ fn test_full_initial_contribution() {
     assert_eq!(goal.target_amount, 100_000_000);
 }
 
+// ==================== Goal Auto-Closure Tests (#599) ====================
+
+#[test]
+fn test_contribute_to_goal_increases_current_amount() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut req = create_valid_request(&env, &user, "house", 100_000_000);
+    req.initial_contribution = 0;
+    requests.push_back(req);
+    client.batch_set_savings_goals(&admin, &requests);
+
+    let updated = client.contribute_to_goal(&user, &1, &20_000_000_i128);
+
+    assert_eq!(updated.current_amount, 20_000_000);
+    assert_eq!(updated.is_active, true);
+}
+
+#[test]
+fn test_goal_auto_closes_when_target_reached() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut req = create_valid_request(&env, &user, "car", 50_000_000);
+    req.initial_contribution = 0;
+    requests.push_back(req);
+    client.batch_set_savings_goals(&admin, &requests);
+
+    // Contribute exactly the target amount
+    let updated = client.contribute_to_goal(&user, &1, &50_000_000_i128);
+
+    // Goal should be auto-closed
+    assert_eq!(updated.is_active, false);
+    assert_eq!(updated.current_amount, 50_000_000);
+
+    // get_goal_closed_at should return a value
+    let closed_at = client.get_goal_closed_at(&1);
+    assert!(closed_at.is_some());
+}
+
+#[test]
+fn test_goal_auto_closes_on_over_contribution() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut req = create_valid_request(&env, &user, "fund", 50_000_000);
+    req.initial_contribution = 0;
+    requests.push_back(req);
+    client.batch_set_savings_goals(&admin, &requests);
+
+    // Contribute more than target — should be capped and goal auto-closed
+    let updated = client.contribute_to_goal(&user, &1, &999_999_999_i128);
+
+    assert_eq!(updated.is_active, false);
+    assert_eq!(updated.current_amount, 50_000_000); // capped at target
+}
+
+#[test]
+#[should_panic]
+fn test_closed_goal_rejects_further_contributions() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut req = create_valid_request(&env, &user, "savings", 50_000_000);
+    req.initial_contribution = 0;
+    requests.push_back(req);
+    client.batch_set_savings_goals(&admin, &requests);
+
+    // Close the goal
+    client.contribute_to_goal(&user, &1, &50_000_000_i128);
+
+    // This contribution should panic because the goal is closed
+    client.contribute_to_goal(&user, &1, &1_000_i128);
+}
+
+#[test]
+#[should_panic]
+fn test_contribute_with_wrong_caller_panics() {
+    let (env, admin, client) = setup_test_contract();
+    let owner = Address::generate(&env);
+    let other = Address::generate(&env);
+
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut req = create_valid_request(&env, &owner, "trip", 100_000_000);
+    req.initial_contribution = 0;
+    requests.push_back(req);
+    client.batch_set_savings_goals(&admin, &requests);
+
+    // other is not the goal owner — should panic
+    client.contribute_to_goal(&other, &1, &10_000_000_i128);
+}
+
+#[test]
+#[should_panic]
+fn test_contribute_zero_amount_panics() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut req = create_valid_request(&env, &user, "fund", 100_000_000);
+    req.initial_contribution = 0;
+    requests.push_back(req);
+    client.batch_set_savings_goals(&admin, &requests);
+
+    client.contribute_to_goal(&user, &1, &0_i128);
+}
+
+#[test]
+fn test_get_goal_closed_at_none_for_open_goal() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    requests.push_back(create_valid_request(&env, &user, "fund", 100_000_000));
+    client.batch_set_savings_goals(&admin, &requests);
+
+    assert!(client.get_goal_closed_at(&1).is_none());
+}
+
+#[test]
+fn test_full_initial_contribution_auto_closes_goal() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+
+    let mut requests: Vec<SavingsGoalRequest> = Vec::new(&env);
+    let mut req = create_valid_request(&env, &user, "vacation", 100_000_000);
+    req.initial_contribution = 100_000_000; // Full amount at creation
+    requests.push_back(req);
+
+    client.batch_set_savings_goals(&admin, &requests);
+
+    // Goal created with 100% initial contribution should be auto-closed
+    let goal = client.get_goal(&1).unwrap();
+    assert_eq!(goal.current_amount, 100_000_000);
+    assert_eq!(goal.target_amount, 100_000_000);
+    assert_eq!(goal.is_active, false);
+    assert!(client.get_goal_closed_at(&1).is_some());
+}
+
 // ==================== Milestone Achievement Tests ====================
 
 #[test]

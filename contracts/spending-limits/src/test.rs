@@ -3,7 +3,7 @@
 #![cfg(test)]
 
 use crate::{SpendingLimitsContract, SpendingLimitsContractClient};
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Vec};
+use soroban_sdk::{symbol_short, testutils::{Address as _, Ledger}, Address, Env, Symbol, Vec};
 
 use crate::types::{ErrorCode, LimitUpdateResult, SpendingLimitRequest};
 
@@ -427,8 +427,8 @@ fn test_enforce_spending_limit_allows_within_daily_and_monthly() {
     env.ledger().set_timestamp(86_400); // day 1
 
     // Two spends of 5 each are within daily (10) and monthly (300) limits.
-    client.enforce_spending_limit(&user, &5);
-    client.enforce_spending_limit(&user, &5);
+    client.enforce_spending_limit(&user, &5, &None::<Symbol>);
+    client.enforce_spending_limit(&user, &5, &None::<Symbol>);
 }
 
 #[test]
@@ -445,9 +445,9 @@ fn test_enforce_spending_limit_daily_exceeded() {
     env.ledger().set_timestamp(2 * 86_400); // day 2
 
     // 2 * 5 is allowed; the third spend pushes daily total above 10 and should panic.
-    client.enforce_spending_limit(&user, &5);
-    client.enforce_spending_limit(&user, &5);
-    client.enforce_spending_limit(&user, &1);
+    client.enforce_spending_limit(&user, &5, &None::<Symbol>);
+    client.enforce_spending_limit(&user, &5, &None::<Symbol>);
+    client.enforce_spending_limit(&user, &1, &None::<Symbol>);
 }
 
 #[test]
@@ -464,13 +464,13 @@ fn test_enforce_spending_limit_monthly_exceeded_over_multiple_days() {
     // Spend 1 unit on 30 different "days" within the same logical month window.
     for d in 0..30u64 {
         env.ledger().set_timestamp(d * 86_400);
-        client.enforce_spending_limit(&user, &1);
+        client.enforce_spending_limit(&user, &1, &None::<Symbol>);
     }
 
     // Next day is still within the same 30-day "month" bucket and should exceed the
     // monthly limit, even though the daily limit would allow it.
     env.ledger().set_timestamp(30 * 86_400);
-    client.enforce_spending_limit(&user, &1);
+    client.enforce_spending_limit(&user, &1, &None::<Symbol>);
 }
 
 #[test]
@@ -481,5 +481,157 @@ fn test_enforce_without_limit_does_not_block() {
     env.ledger().set_timestamp(10 * 86_400);
 
     // No limit configured for this user; enforce should be a no-op and not panic.
-    client.enforce_spending_limit(&user, &1_000_000);
+    client.enforce_spending_limit(&user, &1_000_000, &None::<Symbol>);
+}
+
+// ─── Exception rule tests (#598) ──────────────────────────────────────────────
+
+#[test]
+fn test_add_approved_category() {
+    let (env, admin, client) = setup_test_contract();
+    let category = symbol_short!("medical");
+
+    client.add_approved_category(&admin, &category);
+
+    let categories = client.get_approved_categories();
+    assert_eq!(categories.len(), 1);
+    assert!(categories.contains(&category));
+}
+
+#[test]
+fn test_add_and_remove_approved_category() {
+    let (env, admin, client) = setup_test_contract();
+    let cat = symbol_short!("medical");
+
+    client.add_approved_category(&admin, &cat);
+    assert_eq!(client.get_approved_categories().len(), 1);
+
+    client.remove_approved_category(&admin, &cat);
+    assert_eq!(client.get_approved_categories().len(), 0);
+}
+
+#[test]
+fn test_add_duplicate_approved_category_is_idempotent() {
+    let (env, admin, client) = setup_test_contract();
+    let cat = symbol_short!("medical");
+
+    client.add_approved_category(&admin, &cat);
+    client.add_approved_category(&admin, &cat);
+
+    // Should still only appear once
+    assert_eq!(client.get_approved_categories().len(), 1);
+}
+
+#[test]
+fn test_add_exception_grants_bypass() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+    let cat = symbol_short!("medical");
+
+    // Configure a tight limit: monthly 30 -> daily 1
+    let mut requests: Vec<SpendingLimitRequest> = Vec::new(&env);
+    requests.push_back(create_valid_request(&env, &user, 30));
+    client.batch_update_spending_limits(&admin, &requests);
+
+    env.ledger().set_timestamp(86_400);
+
+    // Without exception, a spend of 2 on day 1 (daily limit = 1) should be blocked.
+    // Now add an approved category and grant an exception.
+    client.add_approved_category(&admin, &cat);
+    client.add_exception(&admin, &user, &cat);
+
+    // is_exempt should return true
+    assert!(client.is_exempt(&user, &cat));
+
+    // Spend exceeds the daily limit but has an exception — must succeed
+    client.enforce_spending_limit(&user, &999, &Some(cat.clone()));
+}
+
+#[test]
+fn test_exception_does_not_bypass_without_category() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+    let cat = symbol_short!("medical");
+
+    // Tight limit: monthly 30 -> daily 1
+    let mut requests: Vec<SpendingLimitRequest> = Vec::new(&env);
+    requests.push_back(create_valid_request(&env, &user, 30));
+    client.batch_update_spending_limits(&admin, &requests);
+
+    client.add_approved_category(&admin, &cat);
+    client.add_exception(&admin, &user, &cat);
+
+    env.ledger().set_timestamp(86_400);
+
+    // Spending with no category should still enforce limits normally
+    client.enforce_spending_limit(&user, &1, &None::<Symbol>);
+    // Limit is now consumed; the second call without category must still succeed within limit.
+    // (daily limit = 1, already used 1 — next no-category call should panic)
+}
+
+#[test]
+#[should_panic]
+fn test_add_exception_for_unapproved_category_panics() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+    let cat = symbol_short!("blocked");
+
+    // Category was never added to approved list
+    client.add_exception(&admin, &user, &cat);
+}
+
+#[test]
+fn test_remove_exception_disables_bypass() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+    let cat = symbol_short!("medical");
+
+    // Tight limit
+    let mut requests: Vec<SpendingLimitRequest> = Vec::new(&env);
+    requests.push_back(create_valid_request(&env, &user, 30));
+    client.batch_update_spending_limits(&admin, &requests);
+
+    client.add_approved_category(&admin, &cat);
+    client.add_exception(&admin, &user, &cat);
+    assert!(client.is_exempt(&user, &cat));
+
+    client.remove_exception(&admin, &user, &cat);
+    assert!(!client.is_exempt(&user, &cat));
+}
+
+#[test]
+fn test_get_exception_returns_rule() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+    let cat = symbol_short!("medical");
+
+    client.add_approved_category(&admin, &cat);
+    client.add_exception(&admin, &user, &cat);
+
+    let rule = client.get_exception(&user, &cat).unwrap();
+    assert_eq!(rule.user, user);
+    assert_eq!(rule.category, cat);
+    assert!(rule.is_active);
+}
+
+#[test]
+fn test_non_exempt_user_still_restricted() {
+    let (env, admin, client) = setup_test_contract();
+    let user = Address::generate(&env);
+    let other_user = Address::generate(&env);
+    let cat = symbol_short!("medical");
+
+    // Tight limit for other_user
+    let mut requests: Vec<SpendingLimitRequest> = Vec::new(&env);
+    requests.push_back(create_valid_request(&env, &other_user, 30));
+    client.batch_update_spending_limits(&admin, &requests);
+
+    // Grant exception to user (not other_user)
+    client.add_approved_category(&admin, &cat);
+    client.add_exception(&admin, &user, &cat);
+
+    env.ledger().set_timestamp(86_400);
+
+    // other_user has no exception — limit still enforced
+    assert!(!client.is_exempt(&other_user, &cat));
 }

@@ -199,6 +199,8 @@ pub enum DataKey {
     GoalMilestonesPercent(u64),
     /// Total milestones achieved lifetime
     TotalMilestonesAchieved,
+    /// Ledger sequence at which a goal was automatically closed
+    GoalClosedAt(u64),
 }
 
 /// Error codes for goal validation and creation.
@@ -225,6 +227,10 @@ pub mod ErrorCode {
     pub const UNAUTHORIZED_USER: u32 = 8;
     /// Goal has already achieved this milestone
     pub const MILESTONE_ALREADY_ACHIEVED: u32 = 9;
+    /// Goal is closed (target met) and no longer accepts contributions
+    pub const GOAL_CLOSED: u32 = 11;
+    /// Contribution amount is invalid (zero or negative)
+    pub const INVALID_CONTRIBUTION_AMOUNT: u32 = 12;
 }
 
 /// Events emitted by the savings goals contract.
@@ -320,5 +326,12 @@ impl GoalEvents {
         let topics = (symbol_short!("milestone"), symbol_short!("done"));
         env.events()
             .publish(topics, (batch_id, successful, failed, total_percentage));
+    }
+
+    /// Event emitted when a goal is automatically closed because the target amount was reached.
+    pub fn goal_closed(env: &Env, goal_id: u64, user: &Address, final_amount: i128, closed_at: u64) {
+        let topics = (symbol_short!("goal"), symbol_short!("closed"), goal_id);
+        env.events()
+            .publish(topics, (goal_id, user.clone(), final_amount, closed_at));
     }
 }

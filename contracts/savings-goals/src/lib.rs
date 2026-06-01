@@ -48,6 +48,10 @@ pub enum SavingsGoalError {
     EmptyBatch = 4,
     /// Batch exceeds maximum size
     BatchTooLarge = 5,
+    /// Goal is closed (target met) and no longer accepts contributions
+    GoalClosed = 6,
+    /// Contribution amount is zero or negative
+    InvalidAmount = 7,
 }
 
 impl From<SavingsGoalError> for soroban_sdk::Error {
@@ -464,16 +468,40 @@ impl SavingsGoalsContract {
         } else {
             0
         };
+        let mut newly_triggered_100 = false;
         for &milestone in milestones.iter() {
             if progress >= milestone && !triggered.contains(&milestone) {
                 // Emit event
                 GoalEvents::milestone_achieved_percent(env, goal_id, milestone);
                 triggered.push_back(milestone);
+                if milestone == 100 {
+                    newly_triggered_100 = true;
+                }
             }
         }
         env.storage()
             .persistent()
             .set(&DataKey::GoalMilestonesPercent(goal_id), &triggered);
+
+        // Auto-close the goal the first time 100% is reached
+        if newly_triggered_100 && goal.is_active {
+            let mut closed_goal = goal;
+            closed_goal.is_active = false;
+            let closed_at = env.ledger().sequence() as u64;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Goal(goal_id), &closed_goal);
+            env.storage()
+                .persistent()
+                .set(&DataKey::GoalClosedAt(goal_id), &closed_at);
+            GoalEvents::goal_closed(
+                env,
+                goal_id,
+                &closed_goal.user,
+                closed_goal.current_amount,
+                closed_at,
+            );
+        }
     }
     // ...existing code...
 
@@ -595,6 +623,86 @@ impl SavingsGoalsContract {
             .instance()
             .get(&DataKey::TotalMilestonesAchieved)
             .unwrap_or(0)
+    }
+
+    /// Contributes an additional amount to an existing savings goal.
+    ///
+    /// The caller must be the goal owner. If the contribution causes the goal's
+    /// `current_amount` to reach or exceed the `target_amount`, the goal is
+    /// automatically closed: `is_active` is set to `false`, the closure ledger
+    /// sequence is persisted, and a `goal_closed` event is emitted. Subsequent
+    /// contributions to a closed goal will panic.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `caller` - The goal owner's address (must match `goal.user`)
+    /// * `goal_id` - ID of the goal to contribute to
+    /// * `amount` - Positive contribution amount (in stroops)
+    ///
+    /// # Returns
+    /// * `SavingsGoal` - The updated goal state after contribution
+    ///
+    /// # Errors
+    /// * `Unauthorized` - If caller is not the goal owner
+    /// * `GoalClosed`   - If the goal is already closed
+    /// * `InvalidAmount` - If amount is zero or negative
+    pub fn contribute_to_goal(env: Env, caller: Address, goal_id: u64, amount: i128) -> SavingsGoal {
+        caller.require_auth();
+
+        if amount <= 0 {
+            panic_with_error!(&env, SavingsGoalError::InvalidAmount);
+        }
+
+        let mut goal: SavingsGoal = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::Goal(goal_id))
+        {
+            Some(g) => g,
+            None => panic_with_error!(&env, SavingsGoalError::NotInitialized),
+        };
+
+        // Only the goal owner may contribute
+        if goal.user != caller {
+            panic_with_error!(&env, SavingsGoalError::Unauthorized);
+        }
+
+        // Closed goals do not accept further contributions
+        if !goal.is_active {
+            panic_with_error!(&env, SavingsGoalError::GoalClosed);
+        }
+
+        // Apply contribution, capped at target to avoid overflow accumulation
+        let new_amount = goal
+            .current_amount
+            .checked_add(amount)
+            .unwrap_or(i128::MAX);
+        goal.current_amount = if new_amount > goal.target_amount {
+            goal.target_amount
+        } else {
+            new_amount
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Goal(goal_id), &goal);
+
+        // Check milestones and auto-close if target is reached
+        Self::check_and_emit_milestones(&env, goal_id);
+
+        // Re-load the potentially-closed goal to return the latest state
+        env.storage()
+            .persistent()
+            .get(&DataKey::Goal(goal_id))
+            .unwrap_or(goal)
+    }
+
+    /// Returns the ledger sequence at which a goal was automatically closed,
+    /// or `None` if the goal has not yet been closed.
+    pub fn get_goal_closed_at(env: Env, goal_id: u64) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GoalClosedAt(goal_id))
     }
 
     // Internal helper to verify admin

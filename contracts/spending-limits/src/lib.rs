@@ -24,11 +24,11 @@
 mod types;
 mod validation;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
 
 pub use crate::types::{
-    BatchLimitMetrics, BatchLimitResult, DataKey, ErrorCode, LimitEvents, LimitUpdateResult,
-    SpendingLimit, SpendingLimitRequest, MAX_BATCH_SIZE,
+    BatchLimitMetrics, BatchLimitResult, DataKey, ErrorCode, ExceptionRule, LimitEvents,
+    LimitUpdateResult, SpendingLimit, SpendingLimitRequest, MAX_BATCH_SIZE,
 };
 use crate::validation::validate_limit_request;
 
@@ -52,6 +52,8 @@ pub enum SpendingLimitError {
     MonthlyLimitExceeded = 7,
     /// Invalid spend amount
     InvalidAmount = 8,
+    /// Category is not in the approved list
+    CategoryNotApproved = 9,
 }
 
 impl From<SpendingLimitError> for soroban_sdk::Error {
@@ -269,10 +271,19 @@ impl SpendingLimitsContract {
     ///
     /// If no limit is configured for the user or the limit is inactive, the spend is
     /// allowed and no state is updated.
-    pub fn enforce_spending_limit(env: Env, user: Address, amount: i128) {
+    pub fn enforce_spending_limit(env: Env, user: Address, amount: i128, category: Option<Symbol>) {
         // Validate amount
         if amount <= 0 {
             panic_with_error!(&env, SpendingLimitError::InvalidAmount);
+        }
+
+        // If a category is supplied and the user has an active exception for it,
+        // bypass all limit checks and emit a bypass event.
+        if let Some(ref cat) = category {
+            if Self::is_exempt_internal(&env, &user, cat) {
+                LimitEvents::exception_bypassed(&env, &user, amount, cat);
+                return;
+            }
         }
 
         // Look up configured limit; if none, there is nothing to enforce.
@@ -420,6 +431,139 @@ impl SpendingLimitsContract {
             .instance()
             .get(&DataKey::TotalBatchesProcessed)
             .unwrap_or(0)
+    }
+
+    /// Adds a category to the admin-approved exception allow-list.
+    ///
+    /// Only categories in this list can be used in exception rules. Admin only.
+    pub fn add_approved_category(env: Env, caller: Address, category: Symbol) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let mut categories: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ApprovedCategories)
+            .unwrap_or(Vec::new(&env));
+
+        if !categories.contains(&category) {
+            categories.push_back(category.clone());
+            env.storage()
+                .instance()
+                .set(&DataKey::ApprovedCategories, &categories);
+            LimitEvents::approved_category_added(&env, &category);
+        }
+    }
+
+    /// Removes a category from the admin-approved exception allow-list. Admin only.
+    pub fn remove_approved_category(env: Env, caller: Address, category: Symbol) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let categories: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ApprovedCategories)
+            .unwrap_or(Vec::new(&env));
+
+        let mut new_categories: Vec<Symbol> = Vec::new(&env);
+        let mut found = false;
+        for cat in categories.iter() {
+            if cat == category {
+                found = true;
+            } else {
+                new_categories.push_back(cat);
+            }
+        }
+
+        if found {
+            env.storage()
+                .instance()
+                .set(&DataKey::ApprovedCategories, &new_categories);
+            LimitEvents::approved_category_removed(&env, &category);
+        }
+    }
+
+    /// Returns all admin-approved exception categories.
+    pub fn get_approved_categories(env: Env) -> Vec<Symbol> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ApprovedCategories)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Grants a spending limit exception to a user for a specific approved category.
+    ///
+    /// When `enforce_spending_limit` is called with this category for this user,
+    /// the normal daily/monthly checks are skipped. Admin only.
+    ///
+    /// # Errors
+    /// * `CategoryNotApproved` - if the category is not in the approved list
+    pub fn add_exception(env: Env, caller: Address, user: Address, category: Symbol) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        // Verify the category is approved before granting exception
+        let categories: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ApprovedCategories)
+            .unwrap_or(Vec::new(&env));
+
+        if !categories.contains(&category) {
+            panic_with_error!(&env, SpendingLimitError::CategoryNotApproved);
+        }
+
+        let rule = ExceptionRule {
+            user: user.clone(),
+            category: category.clone(),
+            created_at: env.ledger().sequence() as u64,
+            is_active: true,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::ExceptionRule(user.clone(), category.clone()), &rule);
+
+        LimitEvents::exception_added(&env, &user, &category);
+    }
+
+    /// Removes an active spending limit exception for a user+category pair. Admin only.
+    pub fn remove_exception(env: Env, caller: Address, user: Address, category: Symbol) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let key = DataKey::ExceptionRule(user.clone(), category.clone());
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().remove(&key);
+            LimitEvents::exception_removed(&env, &user, &category);
+        }
+    }
+
+    /// Returns the exception rule for a user+category pair, if one exists.
+    pub fn get_exception(env: Env, user: Address, category: Symbol) -> Option<ExceptionRule> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ExceptionRule(user, category))
+    }
+
+    /// Returns `true` if the user has an active exception for the given category.
+    pub fn is_exempt(env: Env, user: Address, category: Symbol) -> bool {
+        Self::is_exempt_internal(&env, &user, &category)
+    }
+
+    /// Internal helper: checks exemption without consuming Env.
+    fn is_exempt_internal(env: &Env, user: &Address, category: &Symbol) -> bool {
+        match env
+            .storage()
+            .persistent()
+            .get::<DataKey, ExceptionRule>(&DataKey::ExceptionRule(
+                user.clone(),
+                category.clone(),
+            )) {
+            Some(rule) => rule.is_active,
+            None => false,
+        }
     }
 
     // Internal helper to verify admin
