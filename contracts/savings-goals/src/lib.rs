@@ -378,6 +378,7 @@ impl SavingsGoalsContract {
                         is_complete: false,
                         unlock_at,
                         expires_at,
+                        penalty_bps: request.penalty_bps,
                     };
 
                     // Accumulate metrics
@@ -730,6 +731,7 @@ impl SavingsGoalsContract {
             is_complete: false,
             unlock_at,
             expires_at,
+            penalty_bps: existing_goal.penalty_bps,
         };
 
         // Store the goal
@@ -790,7 +792,7 @@ impl SavingsGoalsContract {
         if goal.user != caller {
             panic_with_error!(&env, SavingsGoalError::Unauthorized);
         }
-        if !goal.is_active {
+        if !goal.is_active && !goal.is_complete {
             panic_with_error!(&env, SavingsGoalError::GoalNotActive);
         }
 
@@ -800,11 +802,18 @@ impl SavingsGoalsContract {
             panic_with_error!(&env, SavingsGoalError::GoalLocked);
         }
 
-        if amount > goal.current_amount {
+        let penalty = if goal.is_complete {
+            0
+        } else {
+            (amount * goal.penalty_bps as i128) / 10_000
+        };
+        let gross_amount = amount.checked_add(penalty).unwrap_or(i128::MAX);
+
+        if gross_amount > goal.current_amount {
             panic_with_error!(&env, SavingsGoalError::InsufficientBalance);
         }
 
-        goal.current_amount -= amount;
+        goal.current_amount -= gross_amount;
         goal.is_complete = goal.current_amount >= goal.target_amount;
 
         env.storage()
@@ -931,8 +940,8 @@ impl SavingsGoalsContract {
             panic_with_error!(&env, SavingsGoalError::Unauthorized);
         }
 
-        // Verify goal is active
-        if !goal.is_active {
+        // Verify goal is active or already complete
+        if !goal.is_active && !goal.is_complete {
             panic_with_error!(&env, SavingsGoalError::GoalNotActive);
         }
 
@@ -942,13 +951,20 @@ impl SavingsGoalsContract {
             panic_with_error!(&env, SavingsGoalError::GoalLocked);
         }
 
-        // Verify sufficient balance
-        if amount > goal.current_amount {
+        let penalty = if goal.is_complete {
+            0
+        } else {
+            (amount * goal.penalty_bps as i128) / 10_000
+        };
+        let gross_amount = amount.checked_add(penalty).unwrap_or(i128::MAX);
+
+        // Verify sufficient balance including penalty
+        if gross_amount > goal.current_amount {
             panic_with_error!(&env, SavingsGoalError::InsufficientBalance);
         }
 
         // Update current amount
-        goal.current_amount = goal.current_amount.checked_sub(amount).unwrap_or(0);
+        goal.current_amount = goal.current_amount.checked_sub(gross_amount).unwrap_or(0);
 
         // Update completion status
         let was_complete = goal.is_complete;
