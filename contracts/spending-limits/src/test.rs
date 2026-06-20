@@ -10,6 +10,7 @@ use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     Address, Env, Symbol, Vec,
 };
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::types::{ErrorCode, LimitStrategy, LimitUpdateResult, SpendingLimitRequest};
 use alloc::format;
@@ -456,13 +457,22 @@ fn test_enforce_spending_limit_resets_after_window() {
     requests.push_back(request);
     client.batch_update_spending_limits(&admin, &requests);
 
-    // Use the starting window
+    // Use the starting window and consume the daily limit.
     env.ledger().set_timestamp(0);
     client.enforce_spending_limit(&user, &10, &None::<Symbol>);
 
-    // Advance past the configured reset window and verify the counter resets.
+    // Same-day extra spend should be blocked by the daily limit.
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        client.enforce_spending_limit(&user, &1, &None::<Symbol>);
+    }));
+    assert!(result.is_err(), "Same-day spend above the daily limit should fail");
+
+    // Advance past the 24-hour window and verify the count resets.
     env.ledger().set_timestamp(86_401);
     client.enforce_spending_limit(&user, &10, &None::<Symbol>);
+
+    let limit = client.get_spending_limit(&user).unwrap();
+    assert_eq!(limit.current_spending, 20);
 }
 
 #[test]
