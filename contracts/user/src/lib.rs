@@ -1,5 +1,8 @@
 #![no_std]
 
+#[cfg(test)]
+mod test;
+
 use soroban_sdk::{contract, contractimpl, Address, Env, Map};
 
 // Storage key for users map
