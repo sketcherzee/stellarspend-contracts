@@ -39,6 +39,7 @@ members = [
     "contracts/currency-conversion",
     "contracts/benchmarks",
     "contracts/zk-verifier",
+    "contracts/pausable",
 ]
 
 [package]
