@@ -39,6 +39,7 @@ impl PriorityLevel {
             _ => None,
         }
     }
+}
 
 use soroban_sdk::{contractimpl, contracttype, Address, Env, Vec};
 pub use storage::{FeeLog, FeeLogKind};
@@ -308,7 +309,12 @@ impl FeeEvents {
         user: &Address,
         amount: i128,
     ) -> (Symbol, Symbol, Address, i128) {
-        (symbol_short!("fee"), operation.as_symbol(), user.clone(), amount)
+        (
+            symbol_short!("fee"),
+            operation.as_symbol(),
+            user.clone(),
+            amount,
+        )
     }
 
     pub fn priority_config_updated(env: &Env, admin: &Address, config: &PriorityFeeConfig) {
@@ -397,7 +403,8 @@ impl FeeEvents {
         min_fee: i128,
         max_fee: i128,
     ) {
-        let topics = Self::indexed_topics(FeeOperationType::AssetConfigUpdate, admin, fee_rate as i128);
+        let topics =
+            Self::indexed_topics(FeeOperationType::AssetConfigUpdate, admin, fee_rate as i128);
         env.events().publish(
             topics,
             AssetFeeConfigEvent {
@@ -460,7 +467,8 @@ impl FeeEvents {
     }
 
     pub fn batch_fees_deducted(env: &Env, indexed_user: &Address, count: u32, total_fees: i128) {
-        let topics = Self::indexed_topics(FeeOperationType::BatchFeeSummary, indexed_user, total_fees);
+        let topics =
+            Self::indexed_topics(FeeOperationType::BatchFeeSummary, indexed_user, total_fees);
         env.events().publish(
             topics,
             BatchFeeSummaryEvent {
