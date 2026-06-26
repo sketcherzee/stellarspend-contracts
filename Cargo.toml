@@ -34,6 +34,7 @@ members = [
     "contracts/spending-categories",
     "contracts/user",
     "contracts/users",
+    "contracts/activity-feed",
     "contracts/transactional",
     "contracts/transactions",
     "contracts/transaction-validation",
