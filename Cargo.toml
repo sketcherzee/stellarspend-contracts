@@ -21,6 +21,7 @@ members = [
     "contracts/shared-budgets",
     "contracts/multi-currency-wallet",
     "contracts/spending-limits",
+    "contracts/savings",
     "contracts/savings-goals",
     "contracts/batch-history",
     "contracts/batch-notifications",
@@ -54,6 +55,8 @@ autotests = false
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+savings = { path = "contracts/savings" }
+savings-goals = { path = "contracts/savings-goals" }
 
 [[test]]
 name = "snapshot_tests"
@@ -74,6 +77,10 @@ path = "tests/rate_limit_tests.rs"
 [[test]]
 name = "concurrent_spending_tests"
 path = "contracts/tests/concurrent_spending_tests.rs"
+
+[[test]]
+name = "savings_goals_test"
+path = "contracts/tests/savings_goals_test.rs"
 
 [workspace.package]
 version = "0.1.0"
