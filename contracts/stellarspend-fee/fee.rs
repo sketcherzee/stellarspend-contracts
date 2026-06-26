@@ -42,10 +42,57 @@ impl PriorityLevel {
 }
 //Convertable issue
 
-use soroban_sdk::{contractimpl, contracttype, Address, Env, Vec};
-pub use storage::{FeeLog, FeeLogKind};
+    pub fn to_u32(self) -> u32 {
+        match self {
+            PriorityLevel::Low => 0,
+            PriorityLevel::Medium => 1,
+            PriorityLevel::High => 2,
+            PriorityLevel::Urgent => 3,
+        }
+    }
+}
 
-use self::storage::{
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PriorityFeeConfig {
+    pub low_multiplier_bps: u32,
+    pub medium_multiplier_bps: u32,
+    pub high_multiplier_bps: u32,
+    pub urgent_multiplier_bps: u32,
+}
+
+impl Default for PriorityFeeConfig {
+    fn default() -> Self {
+        Self {
+            low_multiplier_bps: 8_000,
+            medium_multiplier_bps: 10_000,
+            high_multiplier_bps: 15_000,
+            urgent_multiplier_bps: 20_000,
+        }
+    }
+}
+
+impl PriorityFeeConfig {
+    pub fn is_valid(&self) -> bool {
+        self.low_multiplier_bps > 0
+            && self.low_multiplier_bps <= self.medium_multiplier_bps
+            && self.medium_multiplier_bps <= self.high_multiplier_bps
+            && self.high_multiplier_bps <= self.urgent_multiplier_bps
+    }
+
+    pub fn get_multiplier_bps(&self, priority: PriorityLevel) -> u32 {
+        match priority {
+            PriorityLevel::Low => self.low_multiplier_bps,
+            PriorityLevel::Medium => self.medium_multiplier_bps,
+            PriorityLevel::High => self.high_multiplier_bps,
+            PriorityLevel::Urgent => self.urgent_multiplier_bps,
+        }
+    }
+}
+
+pub use crate::storage::{FeeLog, FeeLogKind};
+
+use crate::storage::{
     append_fee_log, get_fee_log as read_fee_log, get_fee_log_count as read_fee_log_count,
     get_fee_logs as read_fee_logs, FeeLogKind as StorageFeeLogKind,
 };
@@ -576,17 +623,41 @@ pub fn calculate_fee_with_priority(
     let mut fee_rate = config.default_fee_rate;
     for window in config.windows.iter() {
         if now >= window.start && now <= window.end {
-            base_fee_rate = window.fee_rate;
+            fee_rate = window.fee_rate;
             break;
         }
     }
 
     // Apply priority multiplier
     let adjusted_fee_rate =
-        calculate_priority_fee_rate(base_fee_rate, priority, &config.priority_config);
+        calculate_priority_fee_rate(fee_rate, priority, &config.priority_config);
 
     // Calculate fee: amount * rate / 10000
     (amount * adjusted_fee_rate as i128) / 10_000
+}
+
+pub fn calculate_fee_for_asset_with_priority(
+    _env: &Env,
+    amount: i128,
+    config: &AssetFeeConfig,
+    priority_config: &PriorityFeeConfig,
+    priority: PriorityLevel,
+) -> i128 {
+    if amount <= 0 {
+        return 0;
+    }
+
+    let adjusted_fee_rate = calculate_priority_fee_rate(config.fee_rate, priority, priority_config);
+    let mut fee = (amount * adjusted_fee_rate as i128) / 10_000;
+
+    if config.min_fee > 0 {
+        fee = fee.max(config.min_fee);
+    }
+    if config.max_fee > 0 {
+        fee = fee.min(config.max_fee);
+    }
+
+    fee
 }
 
 pub fn validate_windows(windows: &Vec<FeeWindow>) -> bool {
@@ -598,6 +669,7 @@ pub fn validate_windows(windows: &Vec<FeeWindow>) -> bool {
     true
 }
 
+#[contract]
 pub struct FeeContract;
 
 #[contractimpl]
@@ -1031,7 +1103,7 @@ impl FeeContract {
             &DataKey::UserAssetFeesAccrued(payer.clone(), asset.clone()),
             &user_asset_fees,
         );
-        fee
+        (net, fee)
     }
 
     pub fn record_fee_refund(env: Env, payer: Address, amount: i128, refunded_fee: i128) -> FeeLog {
@@ -1203,7 +1275,7 @@ impl FeeContract {
             .unwrap_or_else(|| panic_with_error!(env, FeeError::NotInitialized))
     }
 
-    fn require_admin(env: &Env, caller: &Address) {
+    pub(crate) fn require_admin(env: &Env, caller: &Address) {
         let admin = Self::require_initialized(env);
         if caller != &admin {
             panic_with_error!(env, FeeError::Unauthorized);
@@ -1499,7 +1571,7 @@ pub fn validate_fee_windows(windows: &Vec<FeeWindow>) -> bool {
 
     // Validate each individual window
     for window in windows.iter() {
-        if !validate_fee_window(window) {
+        if !validate_fee_window(&window) {
             return false;
         }
     }
