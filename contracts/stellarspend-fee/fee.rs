@@ -39,11 +39,11 @@ impl PriorityLevel {
             _ => None,
         }
     }
+}
 
-use soroban_sdk::{contractimpl, contracttype, Address, Env, Vec};
-pub use storage::{FeeLog, FeeLogKind};
+pub use crate::storage::{FeeLog, FeeLogKind};
 
-use self::storage::{
+use crate::storage::{
     append_fee_log, get_fee_log as read_fee_log, get_fee_log_count as read_fee_log_count,
     get_fee_logs as read_fee_logs, FeeLogKind as StorageFeeLogKind,
 };
@@ -308,7 +308,12 @@ impl FeeEvents {
         user: &Address,
         amount: i128,
     ) -> (Symbol, Symbol, Address, i128) {
-        (symbol_short!("fee"), operation.as_symbol(), user.clone(), amount)
+        (
+            symbol_short!("fee"),
+            operation.as_symbol(),
+            user.clone(),
+            amount,
+        )
     }
 
     pub fn priority_config_updated(env: &Env, admin: &Address, config: &PriorityFeeConfig) {
@@ -397,7 +402,8 @@ impl FeeEvents {
         min_fee: i128,
         max_fee: i128,
     ) {
-        let topics = Self::indexed_topics(FeeOperationType::AssetConfigUpdate, admin, fee_rate as i128);
+        let topics =
+            Self::indexed_topics(FeeOperationType::AssetConfigUpdate, admin, fee_rate as i128);
         env.events().publish(
             topics,
             AssetFeeConfigEvent {
@@ -460,7 +466,8 @@ impl FeeEvents {
     }
 
     pub fn batch_fees_deducted(env: &Env, indexed_user: &Address, count: u32, total_fees: i128) {
-        let topics = Self::indexed_topics(FeeOperationType::BatchFeeSummary, indexed_user, total_fees);
+        let topics =
+            Self::indexed_topics(FeeOperationType::BatchFeeSummary, indexed_user, total_fees);
         env.events().publish(
             topics,
             BatchFeeSummaryEvent {
@@ -1194,7 +1201,7 @@ impl FeeContract {
             .unwrap_or_else(|| panic_with_error!(env, FeeError::NotInitialized))
     }
 
-    fn require_admin(env: &Env, caller: &Address) {
+    pub(crate) fn require_admin(env: &Env, caller: &Address) {
         let admin = Self::require_initialized(env);
         if caller != &admin {
             panic_with_error!(env, FeeError::Unauthorized);
