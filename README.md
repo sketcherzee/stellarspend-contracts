@@ -263,6 +263,7 @@ adding documentation for a contract that doesn't have one yet.
 * Additional ZK circuits for privacy use cases
 * Soroban contract testing
 * Documentation improvements
+* Benchmarks – [Benchmarks README](contracts/benchmarks/README.md)
 * Frontend integration examples
 * Testnet deployment guides
 
