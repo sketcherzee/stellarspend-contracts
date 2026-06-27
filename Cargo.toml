@@ -35,6 +35,7 @@ members = [
     "contracts/benchmarks",
     "contracts/zk-verifier",
     "contracts/pausable",
+    "contracts/allowances",
 ]
 
 [package]
@@ -74,12 +75,17 @@ name = "savings_goals_test"
 path = "contracts/tests/savings_goals_test.rs"
 
 [[test]]
+
 name = "governance_tests"
 path = "tests/governance_tests.rs"
 
 [[test]]
+Add-integration-test-for-savings-savings-goals-interaction
 name = "throttling_tests"
 path = "tests/throttling_tests.rs"
+name = "throttling_test"
+path = "contracts/tests/throttling_test.rs"
+
 
 [[test]]
 name = "timelock_tests"

@@ -25,11 +25,13 @@
 mod types;
 mod validation;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, panic_with_error, symbol_short, Address, Bytes, Env, Symbol, Vec,
+};
 
 pub use crate::types::{
     BatchGoalMetrics, BatchGoalResult, BatchMilestoneMetrics, BatchMilestoneResult,
-    ContributionRecord, DataKey, ErrorCode, GoalEvents, GoalResult, GoalSnapshot,
+    ContributionRecord, DataKey, ErrorCode, GoalCertificate, GoalEvents, GoalResult, GoalSnapshot,
     MilestoneAchievement, MilestoneAchievementRequest, MilestoneResult, SavingsGoal,
     SavingsGoalProgress, SavingsGoalRequest, MAX_BATCH_SIZE, REVERSAL_PERIOD_SECS,
 };
@@ -73,6 +75,10 @@ pub enum SavingsGoalError {
     ReversalExpired = 15,
     /// No contribution found with the given ID
     ContributionNotFound = 16,
+    /// Deadline alert threshold configuration is invalid
+    InvalidAlertThreshold = 17,
+    /// Duplicate idempotency token for a contribution retry
+    DuplicateContributionRequest = 18,
 }
 
 impl From<SavingsGoalError> for soroban_sdk::Error {
@@ -265,6 +271,10 @@ impl SavingsGoalsContract {
         env.storage()
             .instance()
             .set(&DataKey::TotalBatchesProcessed, &0u64);
+        env.storage().instance().set(
+            &DataKey::DefaultDeadlineAlertThresholds,
+            &Self::default_deadline_alert_thresholds(&env),
+        );
     }
 
     /// Creates savings goals for multiple users in a batch.
@@ -509,11 +519,20 @@ impl SavingsGoalsContract {
 
     /// Contributes funds to a savings goal and emits milestone events at 25/50/75/100%.
     /// Returns the contribution ID, which can be used to reverse the contribution within the reversal window.
-    pub fn contribute_to_goal(env: Env, caller: Address, goal_id: u64, amount: i128) -> u64 {
+    pub fn contribute_to_goal(
+        env: Env,
+        caller: Address,
+        goal_id: u64,
+        amount: i128,
+        idempotency_token: Bytes,
+    ) -> u64 {
         caller.require_auth();
 
         if amount <= 0 {
             panic_with_error!(&env, SavingsGoalError::InvalidAmount);
+        }
+        if idempotency_token.is_empty() {
+            panic_with_error!(&env, SavingsGoalError::DuplicateContributionRequest);
         }
 
         let mut goal: SavingsGoal = env
@@ -524,6 +543,12 @@ impl SavingsGoalsContract {
 
         if goal.user != caller {
             panic_with_error!(&env, SavingsGoalError::Unauthorized);
+        }
+
+        let token_key =
+            DataKey::ContributionIdempotency(caller.clone(), goal_id, idempotency_token.clone());
+        if env.storage().persistent().has(&token_key) {
+            panic_with_error!(&env, SavingsGoalError::DuplicateContributionRequest);
         }
 
         // Check if goal has expired
@@ -587,6 +612,7 @@ impl SavingsGoalsContract {
         let record = ContributionRecord {
             amount: actual_contribution,
             contributed_at: current_time,
+            idempotency_token: idempotency_token.clone(),
             reversed: false,
         };
         env.storage()
@@ -595,6 +621,7 @@ impl SavingsGoalsContract {
         env.storage()
             .persistent()
             .set(&DataKey::LastContribId(goal_id), &contrib_id);
+        env.storage().persistent().set(&token_key, &contrib_id);
 
         Self::check_and_emit_milestones(&env, goal_id);
         GoalEvents::goal_contributed(
@@ -892,7 +919,7 @@ impl SavingsGoalsContract {
 
         // Auto-close the goal the first time 100% is reached
         if newly_triggered_100 && goal.is_active {
-            let mut closed_goal = goal;
+            let mut closed_goal = goal.clone();
             closed_goal.is_active = false;
             let closed_at = env.ledger().sequence() as u64;
             env.storage()
@@ -908,6 +935,20 @@ impl SavingsGoalsContract {
                 closed_goal.current_amount,
                 closed_at,
             );
+        }
+
+        // Issue a goal completion certificate the first time 100% is reached
+        if newly_triggered_100 {
+            let cert_key = DataKey::Certificate(goal_id);
+            if !env.storage().persistent().has(&cert_key) {
+                let certificate = GoalCertificate {
+                    goal_id,
+                    user: goal.user.clone(),
+                    target_amount: goal.target_amount,
+                    issued_at: env.ledger().timestamp(),
+                };
+                env.storage().persistent().set(&cert_key, &certificate);
+            }
         }
     }
     // ...existing code...
@@ -1079,6 +1120,134 @@ impl SavingsGoalsContract {
             .persistent()
             .get(&DataKey::UserGoals(user))
             .unwrap_or(Vec::new(&env))
+    }
+
+    /// Returns a previously recorded contribution for a goal.
+    pub fn get_contribution_record(
+        env: Env,
+        goal_id: u64,
+        contribution_id: u64,
+    ) -> Option<ContributionRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Contribution(goal_id, contribution_id))
+    }
+
+    /// Returns the configured alert thresholds for a goal, falling back to contract defaults.
+    pub fn get_goal_alert_thresholds(env: Env, goal_id: u64) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GoalDeadlineAlertThresholds(goal_id))
+            .unwrap_or_else(|| {
+                env.storage()
+                    .instance()
+                    .get(&DataKey::DefaultDeadlineAlertThresholds)
+                    .unwrap_or_else(|| Self::default_deadline_alert_thresholds(&env))
+            })
+    }
+
+    /// Returns the alert thresholds that have already fired for a goal.
+    pub fn get_goal_alerts_emitted(env: Env, goal_id: u64) -> Vec<u64> {
+        let configured = Self::get_goal_alert_thresholds(env.clone(), goal_id);
+        let mut emitted = Vec::new(&env);
+        for threshold in configured.iter() {
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::GoalDeadlineAlertSent(goal_id, threshold))
+            {
+                emitted.push_back(threshold);
+            }
+        }
+        emitted
+    }
+
+    /// Updates the default deadline alert thresholds for newly created and unconfigured goals.
+    pub fn set_default_alert_thresholds(env: Env, caller: Address, thresholds: Vec<u64>) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let normalized = Self::normalize_deadline_alert_thresholds(&env, thresholds);
+        if normalized.is_empty() {
+            panic_with_error!(&env, SavingsGoalError::InvalidAlertThreshold);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::DefaultDeadlineAlertThresholds, &normalized);
+    }
+
+    /// Overrides deadline alert thresholds for a specific goal.
+    pub fn set_goal_alert_thresholds(
+        env: Env,
+        caller: Address,
+        goal_id: u64,
+        thresholds: Vec<u64>,
+    ) {
+        caller.require_auth();
+
+        let goal: SavingsGoal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Goal(goal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, SavingsGoalError::GoalNotFound));
+
+        if caller != goal.user {
+            Self::require_admin(&env, &caller);
+        }
+
+        let normalized = Self::normalize_deadline_alert_thresholds(&env, thresholds);
+        if normalized.is_empty() {
+            panic_with_error!(&env, SavingsGoalError::InvalidAlertThreshold);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::GoalDeadlineAlertThresholds(goal_id), &normalized);
+
+        GoalEvents::deadline_alert_thresholds_updated(&env, goal_id, &goal.user, normalized.len());
+    }
+
+    /// Emits any due deadline reminder events for an incomplete goal.
+    ///
+    /// Returns the number of newly emitted reminders.
+    pub fn process_goal_alerts(env: Env, goal_id: u64) -> u32 {
+        let goal: SavingsGoal = match env.storage().persistent().get(&DataKey::Goal(goal_id)) {
+            Some(goal) => goal,
+            None => return 0,
+        };
+
+        if !goal.is_active || goal.is_complete {
+            return 0;
+        }
+
+        let current_sequence = env.ledger().sequence() as u64;
+        if current_sequence >= goal.deadline {
+            return 0;
+        }
+
+        let remaining_ledgers = goal.deadline - current_sequence;
+        let remaining_amount = goal.target_amount.saturating_sub(goal.current_amount);
+        let thresholds = Self::get_goal_alert_thresholds(env.clone(), goal_id);
+        let mut emitted = 0u32;
+
+        for threshold in thresholds.iter() {
+            let sent_key = DataKey::GoalDeadlineAlertSent(goal_id, threshold);
+            if remaining_ledgers <= threshold && !env.storage().persistent().has(&sent_key) {
+                GoalEvents::deadline_alert(
+                    &env,
+                    goal_id,
+                    &goal.user,
+                    threshold,
+                    remaining_ledgers,
+                    remaining_amount,
+                );
+                env.storage().persistent().set(&sent_key, &true);
+                emitted += 1;
+            }
+        }
+
+        emitted
     }
 
     /// Number of recurring auto-contribution cycles due between
@@ -1271,6 +1440,86 @@ impl SavingsGoalsContract {
         env.storage()
             .persistent()
             .get(&DataKey::GoalClosedAt(goal_id))
+    }
+
+    /// Retrieves the goal completion certificate for a given goal.
+    /// Returns `None` if the goal hasn't reached 100% yet.
+    pub fn get_certificate(env: Env, goal_id: u64) -> Option<GoalCertificate> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Certificate(goal_id))
+    }
+
+    /// Merges an active source goal into an active target goal.
+    /// The caller must own both goals. The source goal is marked as inactive
+    /// and its balance and progress are rolled into the target goal.
+    pub fn merge_goals(env: Env, caller: Address, source_goal_id: u64, target_goal_id: u64) {
+        caller.require_auth();
+
+        if source_goal_id == target_goal_id {
+            panic_with_error!(&env, SavingsGoalError::InvalidBatch); // Can't merge into itself
+        }
+
+        let mut source_goal: SavingsGoal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Goal(source_goal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, SavingsGoalError::GoalNotFound));
+
+        let mut target_goal: SavingsGoal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Goal(target_goal_id))
+            .unwrap_or_else(|| panic_with_error!(&env, SavingsGoalError::GoalNotFound));
+
+        if source_goal.user != caller || target_goal.user != caller {
+            panic_with_error!(&env, SavingsGoalError::Unauthorized);
+        }
+
+        if !source_goal.is_active || !target_goal.is_active {
+            panic_with_error!(&env, SavingsGoalError::GoalNotActive);
+        }
+
+        // Perform merge
+        let transferred_amount = source_goal.current_amount;
+        target_goal.current_amount = target_goal
+            .current_amount
+            .saturating_add(transferred_amount);
+        source_goal.current_amount = 0;
+        source_goal.is_active = false;
+
+        target_goal.is_complete = target_goal.current_amount >= target_goal.target_amount;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Goal(source_goal_id), &source_goal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Goal(target_goal_id), &target_goal);
+
+        Self::check_and_emit_milestones(&env, target_goal_id);
+
+        let topics = (symbol_short!("goal"), symbol_short!("merged"));
+        env.events()
+            .publish(topics, (source_goal_id, target_goal_id, transferred_amount));
+    }
+
+    fn default_deadline_alert_thresholds(env: &Env) -> Vec<u64> {
+        let mut thresholds = Vec::new(env);
+        thresholds.push_back(100);
+        thresholds.push_back(25);
+        thresholds.push_back(5);
+        thresholds
+    }
+
+    fn normalize_deadline_alert_thresholds(env: &Env, thresholds: Vec<u64>) -> Vec<u64> {
+        let mut normalized = Vec::new(env);
+        for threshold in thresholds.iter() {
+            if threshold > 0 && !normalized.contains(&threshold) {
+                normalized.push_back(threshold);
+            }
+        }
+        normalized
     }
 
     // Internal helper to verify admin
