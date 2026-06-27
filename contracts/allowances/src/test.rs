@@ -311,3 +311,94 @@ fn distribute_nonexistent_returns_error() {
         .expect("contract error");
     assert_eq!(err, AllowanceError::NotFound.into());
 }
+
+// ── Renewal (#841/#842) ───────────────────────────────────────────────────────
+
+#[test]
+fn renew_allowance_reactivates_cancelled_allowance() {
+    let (env, client, owner, recipient, token) = setup(1_000);
+    let now = env.ledger().timestamp();
+
+    let id = client.create_allowance(&owner, &recipient, &token, &200, &Frequency::Weekly, &now);
+    client.cancel_allowance(&id);
+
+    let cancelled = client.get_allowance(&id);
+    assert!(!cancelled.active);
+    let old_count = cancelled.distribution_count;
+
+    let new_start = now + 100;
+    client.renew_allowance(&id, &new_start);
+
+    let renewed = client.get_allowance(&id);
+    assert!(renewed.active, "renewed allowance must be active");
+    assert!(!renewed.paused, "renewed allowance must not be paused");
+    assert_eq!(renewed.next_distribution, new_start);
+    assert_eq!(renewed.amount, 200);
+    assert!(matches!(renewed.frequency, Frequency::Weekly));
+    assert_eq!(renewed.recipient, recipient);
+    assert_eq!(renewed.token, token);
+    assert_eq!(renewed.distribution_count, old_count, "distribution_count must be preserved");
+}
+
+#[test]
+fn renew_allowance_reactivates_once_allowance_after_distribution() {
+    let (env, client, owner, recipient, token) = setup(1_000);
+    let now = env.ledger().timestamp();
+
+    let id = client.create_allowance(&owner, &recipient, &token, &100, &Frequency::Once, &now);
+    client.distribute(&id); // deactivates the Once allowance
+
+    let a = client.get_allowance(&id);
+    assert!(!a.active);
+    let dist_count = a.distribution_count;
+
+    let new_start = now + 50;
+    client.renew_allowance(&id, &new_start);
+
+    let renewed = client.get_allowance(&id);
+    assert!(renewed.active);
+    assert_eq!(renewed.next_distribution, new_start);
+    assert_eq!(renewed.distribution_count, dist_count, "history preserved");
+}
+
+#[test]
+fn renew_still_active_allowance_returns_error() {
+    let (env, client, owner, recipient, token) = setup(1_000);
+    let now = env.ledger().timestamp();
+
+    let id = client.create_allowance(&owner, &recipient, &token, &100, &Frequency::Weekly, &now);
+
+    let err = client
+        .try_renew_allowance(&id, &(now + 100))
+        .err()
+        .expect("must fail")
+        .expect("contract error");
+    assert_eq!(err, AllowanceError::StillActive.into());
+}
+
+// ── Balance query (#844) ──────────────────────────────────────────────────────
+
+#[test]
+fn get_allowance_balance_returns_owner_token_balance() {
+    let (env, client, owner, recipient, token) = setup(1_000);
+    let now = env.ledger().timestamp();
+
+    let id = client.create_allowance(&owner, &recipient, &token, &300, &Frequency::Weekly, &now);
+
+    let balance = client.get_allowance_balance(&id);
+    assert_eq!(balance, 1_000, "balance should reflect owner's minted amount");
+}
+
+#[test]
+fn get_allowance_balance_decreases_after_distribution() {
+    let (env, client, owner, recipient, token) = setup(1_000);
+    let now = env.ledger().timestamp();
+
+    let id = client.create_allowance(&owner, &recipient, &token, &300, &Frequency::Weekly, &now);
+
+    env.ledger().with_mut(|l| l.timestamp = now + 604_800 + 1);
+    client.distribute(&id);
+
+    let balance = client.get_allowance_balance(&id);
+    assert_eq!(balance, 700, "balance should decrease by the distributed amount");
+}

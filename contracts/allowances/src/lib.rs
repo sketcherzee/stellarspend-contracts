@@ -11,6 +11,8 @@
 //! - #833 Add Allowance Pause/Resume   — `pause_allowance` / `resume_allowance`
 //! - #834 Add Allowance Cancellation   — `cancel_allowance` (already present, confirmed)
 //! - #835 Add Allowance Beneficiary Update — `update_beneficiary`
+//! - #841/#842 Implement Allowance Renewal — `renew_allowance` (reactivate + reset schedule)
+//! - #844 Implement Allowance Balance Queries — `get_allowance_balance`
 
 #![no_std]
 
@@ -241,6 +243,49 @@ impl AllowancesContract {
             (symbol_short!("allow"), symbol_short!("ben_upd"), allowance_id),
             (old_recipient, new_recipient),
         );
+    }
+
+    // ── Renewal (#841/#842) ───────────────────────────────────────────────
+
+    /// Renews an inactive (expired/cancelled) allowance, preserving its
+    /// configuration (recipient, token, amount, frequency, distribution_count).
+    /// Reactivates it and resets the schedule to `start_time`. Only the owner may renew. (#841/#842)
+    pub fn renew_allowance(env: Env, allowance_id: u64, start_time: u64) {
+        let mut allowance: Allowance = env
+            .storage().persistent()
+            .get(&DataKey::Allowance(allowance_id))
+            .unwrap_or_else(|| panic_with_error!(&env, AllowanceError::NotFound));
+
+        allowance.owner.require_auth();
+
+        if allowance.active {
+            panic_with_error!(&env, AllowanceError::StillActive);
+        }
+
+        allowance.active = true;
+        allowance.paused = false;
+        allowance.next_distribution = start_time;
+
+        let owner = allowance.owner.clone();
+        env.storage().persistent().set(&DataKey::Allowance(allowance_id), &allowance);
+        env.events().publish(
+            (symbol_short!("allow"), symbol_short!("renewed"), allowance_id),
+            (owner, start_time),
+        );
+    }
+
+    // ── Balance query (#844) ──────────────────────────────────────────────
+
+    /// Returns the funds currently backing this allowance — i.e. the owner's
+    /// spendable balance of the allowance's token, which is the source distributions
+    /// are paid from. Reflects the real amount available for future distributions. (#844)
+    pub fn get_allowance_balance(env: Env, allowance_id: u64) -> i128 {
+        let allowance: Allowance = env
+            .storage().persistent()
+            .get(&DataKey::Allowance(allowance_id))
+            .unwrap_or_else(|| panic_with_error!(&env, AllowanceError::NotFound));
+
+        token::Client::new(&env, &allowance.token).balance(&allowance.owner)
     }
 
     // ── Queries ───────────────────────────────────────────────────────────

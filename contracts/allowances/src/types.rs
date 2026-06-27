@@ -85,6 +85,8 @@ pub enum AllowanceError {
     NotPaused = 9,
     /// Allowance is paused — distribution blocked (#833)
     Paused = 10,
+    /// Cannot renew an allowance that is still active (#841/#842)
+    StillActive = 11,
 }
 
 impl From<AllowanceError> for soroban_sdk::Error {
