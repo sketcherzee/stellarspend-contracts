@@ -11,6 +11,7 @@
 //! - #833 Add Allowance Pause/Resume   — `pause_allowance` / `resume_allowance`
 //! - #834 Add Allowance Cancellation   — `cancel_allowance` (already present, confirmed)
 //! - #835 Add Allowance Beneficiary Update — `update_beneficiary`
+//! - #838 Emit Allowance Payment Events  — `("allow","payment",id)` → (recipient, amount) on every payment
 
 #![no_std]
 
@@ -146,6 +147,14 @@ impl AllowancesContract {
         }
 
         env.storage().persistent().set(&DataKey::Allowance(allowance_id), &allowance);
+
+        // Dedicated payment event for off-chain indexers (#838): a stable
+        // `("allow", "payment", allowance_id)` topic carrying (recipient, amount)
+        // is emitted on every payment, alongside the richer `distrib` event.
+        env.events().publish(
+            (symbol_short!("allow"), symbol_short!("payment"), allowance_id),
+            (allowance.recipient.clone(), allowance.amount),
+        );
         env.events().publish(
             (symbol_short!("allow"), symbol_short!("distrib"), allowance_id),
             (allowance.recipient, allowance.amount, allowance.next_distribution),
