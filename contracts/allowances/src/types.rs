@@ -53,6 +53,26 @@ pub struct Allowance {
     pub active: bool,
     /// Whether the allowance is temporarily paused (issue #833).
     pub paused: bool,
+    /// Maximum cumulative amount that may ever be distributed for this
+    /// allowance (issue #836). `0` means unlimited. Enforced in `distribute`
+    /// against `amount × (distribution_count + 1)`.
+    pub spending_limit: i128,
+    /// Ledger timestamp after which the allowance expires and distributions
+    /// stop automatically (issue #839). `0` means it never expires.
+    pub end_date: u64,
+}
+
+/// A single recorded payment in an allowance's distribution history (#837).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaymentRecord {
+    /// Amount transferred in this distribution.
+    pub amount: i128,
+    /// Ledger timestamp at which the payment was made.
+    pub timestamp: u64,
+    /// Recipient who received this payment (captured at payment time, since the
+    /// beneficiary can change between distributions).
+    pub recipient: Address,
 }
 
 /// Persistent storage keys for the allowances contract.
@@ -66,6 +86,8 @@ pub enum DataKey {
     OwnerAllowances(Address),
     /// Index: list of allowance IDs a recipient is entitled to.
     RecipientAllowances(Address),
+    /// Ordered payment history for an allowance (#837).
+    AllowanceHistory(u64),
 }
 
 /// Error codes returned by the allowances contract.
@@ -85,6 +107,14 @@ pub enum AllowanceError {
     NotPaused = 9,
     /// Allowance is paused — distribution blocked (#833)
     Paused = 10,
+    /// Distribution would exceed the configured spending limit (#836)
+    SpendingLimitExceeded = 11,
+    /// Spending limit must be non-negative (#836)
+    InvalidLimit = 12,
+    /// Allowance has passed its end date and is expired (#839)
+    Expired = 11,
+    /// Expiration timestamp must be in the future (or 0 to clear) (#839)
+    InvalidExpiration = 12,
 }
 
 impl From<AllowanceError> for soroban_sdk::Error {
