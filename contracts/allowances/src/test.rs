@@ -1,9 +1,10 @@
 #![cfg(test)]
 
 use soroban_sdk::{
+    symbol_short,
     testutils::{Address as _, Events as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
-    Address, Env,
+    Address, Env, IntoVal, Symbol, TryFromVal,
 };
 
 use crate::{AllowancesContract, AllowancesContractClient};
@@ -312,6 +313,85 @@ fn distribute_nonexistent_returns_error() {
     assert_eq!(err, AllowanceError::NotFound.into());
 }
 
+// ── Payment events (#838) ───────────────────────────────────────────────────
+
+const PWEEK: u64 = 604_800;
+
+/// Counts emitted events whose topics are `("allow", "payment", _)`.
+fn payment_event_count(env: &Env) -> u32 {
+    let mut count = 0u32;
+    for (_addr, topics, _data) in env.events().all().iter() {
+        if topics.len() == 3 {
+            let t1 = Symbol::try_from_val(env, &topics.get(1).unwrap());
+            if t1.map(|s| s == symbol_short!("payment")).unwrap_or(false) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+#[test]
+fn distribution_emits_payment_event_with_recipient_and_amount() {
+    let (env, client, owner, recipient, token) = setup(1_000);
+    let now = env.ledger().timestamp();
+    let id = client.create_allowance(&owner, &recipient, &token, &100, &Frequency::Once, &now);
+
+    client.distribute(&id);
+
+    // Exact topic/data: ("allow","payment", id) → (recipient, amount).
+    let expected = (
+        client.address.clone(),
+        (symbol_short!("allow"), symbol_short!("payment"), id).into_val(&env),
+        (recipient.clone(), 100i128).into_val(&env),
+    );
+    assert!(
+        env.events().all().contains(expected),
+        "a payment event with (recipient, amount) must be emitted"
+    );
+}
+
+#[test]
+fn payment_event_emitted_on_every_payment() {
+    let (env, client, owner, recipient, token) = setup(10_000);
+    let now = env.ledger().timestamp();
+    let id = client.create_allowance(&owner, &recipient, &token, &50, &Frequency::Weekly, &now);
+
+    // `events().all()` reflects the most recent invocation. Each `distribute`
+    // invocation must emit exactly one payment event; creation emits none.
+    assert_eq!(payment_event_count(&env), 0, "creation emits no payment event");
+
+    client.distribute(&id);
+    assert_eq!(payment_event_count(&env), 1, "first payment emits one event");
+
+    env.ledger().with_mut(|l| l.timestamp = now + PWEEK + 1);
+    client.distribute(&id);
+    assert_eq!(payment_event_count(&env), 1, "second payment emits one event");
+
+    env.ledger().with_mut(|l| l.timestamp = now + 2 * PWEEK + 1);
+    client.distribute(&id);
+    assert_eq!(payment_event_count(&env), 1, "third payment emits one event");
+}
+
+#[test]
+fn payment_event_uses_current_recipient_after_beneficiary_change() {
+    let (env, client, owner, recipient, token) = setup(10_000);
+    let now = env.ledger().timestamp();
+    let new_recipient = Address::generate(&env);
+    let id = client.create_allowance(&owner, &recipient, &token, &100, &Frequency::Weekly, &now);
+
+    client.update_beneficiary(&id, &new_recipient);
+    client.distribute(&id);
+
+    let expected = (
+        client.address.clone(),
+        (symbol_short!("allow"), symbol_short!("payment"), id).into_val(&env),
+        (new_recipient.clone(), 100i128).into_val(&env),
+    );
+    assert!(
+        env.events().all().contains(expected),
+        "payment event must reflect the updated recipient"
+    );
 // ── Allowance expiration (#839) ─────────────────────────────────────────────
 
 const EWEEK: u64 = 604_800;
