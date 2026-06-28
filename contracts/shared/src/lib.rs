@@ -6,6 +6,7 @@ use soroban_sdk::{contracttype, Address, Env, String};
 
 pub mod assets;
 pub mod auth;
+pub mod date_utils;
 pub mod errors;
 pub mod sanitizer;
 pub mod utils;
@@ -39,6 +40,8 @@ pub fn health_check(env: Env) -> HealthStatus {
 #[derive(Clone)]
 pub enum SharedDataKey {
     Admin,
+    /// Approved operator flag keyed by the operator's address.
+    Operator(Address),
 }
 
 /// Returns the current contract owner/admin address.
