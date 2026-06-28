@@ -12,6 +12,8 @@
 //! - #834 Add Allowance Cancellation   — `cancel_allowance` (already present, confirmed)
 //! - #835 Add Allowance Beneficiary Update — `update_beneficiary`
 //! - #837 Add Allowance History         — per-distribution `PaymentRecord` log + `get_allowance_history`
+//! - #838 Emit Allowance Payment Events  — `("allow","payment",id)` → (recipient, amount) on every payment
+//! - #839 Add Allowance Expiration      — `set_expiration` / `is_expired`; `distribute` stops past `end_date`
 
 #![no_std]
 
@@ -65,6 +67,7 @@ impl AllowancesContract {
             distribution_count: 0,
             active: true,
             paused: false,
+            end_date: 0, // never expires until an owner sets an end date (#839)
         };
 
         env.storage().persistent().set(&DataKey::Allowance(count), &allowance);
@@ -114,6 +117,13 @@ impl AllowancesContract {
         }
 
         let now = env.ledger().timestamp();
+
+        // Past the end date the allowance is expired and distributions stop
+        // automatically (#839). `0` means no expiry.
+        if allowance.end_date != 0 && now >= allowance.end_date {
+            panic_with_error!(&env, AllowanceError::Expired);
+        }
+
         if now < allowance.next_distribution {
             panic_with_error!(&env, AllowanceError::TooEarlyToDistribute);
         }
@@ -160,6 +170,14 @@ impl AllowancesContract {
         }
 
         env.storage().persistent().set(&DataKey::Allowance(allowance_id), &allowance);
+
+        // Dedicated payment event for off-chain indexers (#838): a stable
+        // `("allow", "payment", allowance_id)` topic carrying (recipient, amount)
+        // is emitted on every payment, alongside the richer `distrib` event.
+        env.events().publish(
+            (symbol_short!("allow"), symbol_short!("payment"), allowance_id),
+            (allowance.recipient.clone(), allowance.amount),
+        );
         env.events().publish(
             (symbol_short!("allow"), symbol_short!("distrib"), allowance_id),
             (allowance.recipient, allowance.amount, allowance.next_distribution),
@@ -255,6 +273,48 @@ impl AllowancesContract {
             (symbol_short!("allow"), symbol_short!("ben_upd"), allowance_id),
             (old_recipient, new_recipient),
         );
+    }
+
+    // ── Expiration (#839) ─────────────────────────────────────────────────
+
+    /// Sets (or clears) the allowance's end date. Only the owner may call.
+    /// Once the ledger time reaches `end_date`, `distribute` stops automatically
+    /// (returns `Expired`). Pass `0` to remove the expiry.
+    ///
+    /// # Errors
+    /// * `AllowanceError::NotFound`          - allowance does not exist
+    /// * `AllowanceError::AlreadyInactive`   - allowance is no longer active
+    /// * `AllowanceError::InvalidExpiration` - `end_date` is non-zero and not in the future
+    pub fn set_expiration(env: Env, allowance_id: u64, end_date: u64) {
+        let mut allowance: Allowance = env
+            .storage().persistent()
+            .get(&DataKey::Allowance(allowance_id))
+            .unwrap_or_else(|| panic_with_error!(&env, AllowanceError::NotFound));
+
+        allowance.owner.require_auth();
+        if !allowance.active {
+            panic_with_error!(&env, AllowanceError::AlreadyInactive);
+        }
+        if end_date != 0 && end_date <= env.ledger().timestamp() {
+            panic_with_error!(&env, AllowanceError::InvalidExpiration);
+        }
+
+        allowance.end_date = end_date;
+        env.storage().persistent().set(&DataKey::Allowance(allowance_id), &allowance);
+        env.events().publish(
+            (symbol_short!("allow"), symbol_short!("expiry"), allowance_id),
+            end_date,
+        );
+    }
+
+    /// Returns `true` if the allowance has an end date that the current ledger
+    /// time has reached or passed (#839).
+    pub fn is_expired(env: Env, allowance_id: u64) -> bool {
+        let allowance: Allowance = env
+            .storage().persistent()
+            .get(&DataKey::Allowance(allowance_id))
+            .unwrap_or_else(|| panic_with_error!(&env, AllowanceError::NotFound));
+        allowance.end_date != 0 && env.ledger().timestamp() >= allowance.end_date
     }
 
     // ── Queries ───────────────────────────────────────────────────────────
