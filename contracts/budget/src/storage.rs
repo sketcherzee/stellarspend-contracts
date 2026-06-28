@@ -65,6 +65,17 @@ pub struct BudgetFreeze {
     pub auto_unfreeze_at: u64,
 }
 
+/// Temporary suspension state for a paused user budget.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BudgetSuspension {
+    pub is_suspended: bool,
+    pub suspended_at: u64,
+    /// Ledger timestamp when suspension auto-lifts; 0 means indefinite until manual resume.
+    pub resume_at: u64,
+}
+
+/// Recent spend timestamps used for rapid-spending detection.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpendingWindow {
@@ -109,6 +120,7 @@ pub enum DataKey {
     UserTransfers(Address),
     Transfer(u64),
     BudgetFreeze(Address),
+    BudgetSuspension(Address),
     SpendingWindow(Address),
     SuspiciousActivityCount,
     Budget(Address),
@@ -127,6 +139,8 @@ pub enum DataKey {
     BudgetVersionCounter(Address),
     Delegation(Address, Address),
     OwnerDelegates(Address),
+    GlobalRules,
+    UserRules(Address),
 }
 
 // ── Basic accessors (unchanged) ───────────────────────────────────────────────
@@ -271,10 +285,54 @@ pub fn is_budget_frozen(env: &Env, user: &Address, now: u64) -> bool {
     }
 }
 
-// ── OPTIMIZED: record_spend_timestamp ────────────────────────────────────────
-// Before: built an entirely new `recent` Vec by scanning `window.timestamps`,
-//         then assigned it back.  Two Vec allocations for the same data.
-// Now:    build the filtered Vec once; push the new timestamp; one write.
+pub fn get_budget_suspension(env: &Env, user: &Address) -> Option<BudgetSuspension> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BudgetSuspension(user.clone()))
+}
+
+pub fn set_budget_suspension(env: &Env, user: &Address, suspension: &BudgetSuspension) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::BudgetSuspension(user.clone()), suspension);
+}
+
+pub fn clear_budget_suspension(env: &Env, user: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::BudgetSuspension(user.clone()));
+}
+
+fn reactivate_budget_record(env: &Env, user: &Address) {
+    if let Some(mut record) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, super::BudgetRecord>(&DataKey::Budget(user.clone()))
+    {
+        record.is_active = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Budget(user.clone()), &record);
+    }
+}
+
+pub fn try_auto_resume_budget(env: &Env, user: &Address, now: u64) {
+    if let Some(suspension) = get_budget_suspension(env, user) {
+        if suspension.is_suspended && suspension.resume_at > 0 && now >= suspension.resume_at {
+            clear_budget_suspension(env, user);
+            reactivate_budget_record(env, user);
+        }
+    }
+}
+
+pub fn is_budget_suspended(env: &Env, user: &Address, now: u64) -> bool {
+    try_auto_resume_budget(env, user, now);
+    matches!(
+        get_budget_suspension(env, user),
+        Some(s) if s.is_suspended
+    )
+}
+
 pub fn record_spend_timestamp(env: &Env, user: &Address, timestamp: u64) -> u32 {
     let key = DataKey::SpendingWindow(user.clone());
 
