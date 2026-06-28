@@ -7,8 +7,8 @@ use soroban_sdk::{
     Address, Env, IntoVal, Symbol, TryFromVal,
 };
 
-use crate::{AllowancesContract, AllowancesContractClient};
 use crate::types::{AllowanceError, Frequency};
+use crate::{AllowancesContract, AllowancesContractClient};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -56,7 +56,11 @@ fn setup(
 #[test]
 fn contract_deploys_and_count_starts_at_zero() {
     let (env, client, _, _, _) = setup(1_000);
-    assert_eq!(client.allowance_count(), 0, "fresh contract must start at 0");
+    assert_eq!(
+        client.allowance_count(),
+        0,
+        "fresh contract must start at 0"
+    );
     let _ = env;
 }
 
@@ -166,7 +170,10 @@ fn weekly_distribution_transfers_tokens() {
 
     let a = client.get_allowance(&id);
     assert_eq!(a.distribution_count, 1);
-    assert!(a.active, "weekly allowance must stay active after one distribution");
+    assert!(
+        a.active,
+        "weekly allowance must stay active after one distribution"
+    );
     // Next window should be ~2 weeks from start
     assert!(a.next_distribution > now + 604_800);
 }
@@ -181,7 +188,14 @@ fn weekly_distribute_too_early_is_rejected() {
     let (env, client, owner, recipient, token) = setup(1_000);
     let now = env.ledger().timestamp();
 
-    let id = client.create_allowance(&owner, &recipient, &token, &100, &Frequency::Weekly, &(now + 10_000));
+    let id = client.create_allowance(
+        &owner,
+        &recipient,
+        &token,
+        &100,
+        &Frequency::Weekly,
+        &(now + 10_000),
+    );
 
     let err = client
         .try_distribute(&id)
@@ -211,7 +225,10 @@ fn monthly_distribution_transfers_tokens() {
 
     let a = client.get_allowance(&id);
     assert_eq!(a.distribution_count, 1);
-    assert!(a.active, "monthly allowance must stay active after one distribution");
+    assert!(
+        a.active,
+        "monthly allowance must stay active after one distribution"
+    );
     assert!(a.next_distribution > now + 2_592_000);
 }
 
@@ -226,7 +243,14 @@ fn monthly_distribute_too_early_is_rejected() {
     let now = env.ledger().timestamp();
 
     // Start 30 days in the future
-    let id = client.create_allowance(&owner, &recipient, &token, &100, &Frequency::Monthly, &(now + 2_592_000));
+    let id = client.create_allowance(
+        &owner,
+        &recipient,
+        &token,
+        &100,
+        &Frequency::Monthly,
+        &(now + 2_592_000),
+    );
 
     let err = client
         .try_distribute(&id)
@@ -247,7 +271,10 @@ fn once_allowance_deactivates_after_distribution() {
     client.distribute(&id);
 
     let a = client.get_allowance(&id);
-    assert!(!a.active, "Once allowance must be inactive after distribution");
+    assert!(
+        !a.active,
+        "Once allowance must be inactive after distribution"
+    );
 }
 
 #[test]
@@ -350,7 +377,10 @@ fn over_threshold_allowance_is_pending_and_inactive() {
 
     let id = client.create_allowance(&owner, &recipient, &token, &500, &Frequency::Once, &now);
     let a = client.get_allowance(&id);
-    assert!(a.pending_approval, "over-threshold allowance must be pending");
+    assert!(
+        a.pending_approval,
+        "over-threshold allowance must be pending"
+    );
     assert!(!a.active, "unapproved allowance must remain inactive");
 }
 
@@ -534,6 +564,9 @@ fn lifecycle_create_pay_pause_resume_renew_transfer_cancel() {
 
 #[test]
 fn lifecycle_recurring_renews_across_multiple_periods() {
+    // TODO: implement recurring renewal test
+}
+
 // ── Allowance analytics (#846) ──────────────────────────────────────────────
 
 #[test]
@@ -553,6 +586,9 @@ fn analytics_for_new_allowance_is_zero() {
 
 #[test]
 fn analytics_after_one_distribution() {
+    // TODO: implement analytics after one distribution test
+}
+
 // ── Spending limits (#836) ──────────────────────────────────────────────────
 
 const WK: u64 = 604_800;
@@ -684,14 +720,10 @@ fn analytics_for_missing_allowance_fails() {
     let (_env, client, _owner, _recipient, _token) = setup(1_000);
     let err = client
         .try_get_allowance_analytics(&999)
-    client.set_spending_limit(&id, &50); // 100 > 50 → even the first payment is blocked
-
-    let err = client
-        .try_distribute(&id)
         .err()
         .expect("must fail")
         .expect("contract error");
-    assert_eq!(err, AllowanceError::ApprovalRequired.into());
+    assert_eq!(err, AllowanceError::NotFound.into());
 }
 
 #[test]
@@ -787,13 +819,17 @@ fn zero_limit_means_unlimited() {
     // Renew across three consecutive weeks.
     client.distribute(&id);
     for week in 1..3u64 {
-        env.ledger().with_mut(|l| l.timestamp = now + week * WEEK + 1);
+        env.ledger()
+            .with_mut(|l| l.timestamp = now + week * WEEK + 1);
         client.distribute(&id);
     }
 
     let a = client.get_allowance(&id);
     assert_eq!(a.distribution_count, 3);
-    assert!(a.active, "recurring allowance stays active after each renewal");
+    assert!(
+        a.active,
+        "recurring allowance stays active after each renewal"
+    );
     assert_eq!(token_client.balance(&recipient), 150);
 }
 
@@ -807,7 +843,10 @@ fn lifecycle_once_allowance_completes_after_single_payment() {
 
     let a = client.get_allowance(&id);
     assert_eq!(a.distribution_count, 1);
-    assert!(!a.active, "one-time allowance deactivates after its single payment");
+    assert!(
+        !a.active,
+        "one-time allowance deactivates after its single payment"
+    );
 
     // Cannot distribute again.
     let err = client
@@ -866,6 +905,8 @@ fn lifecycle_ownership_transfer_preserves_schedule_and_shifts_funding() {
         client.distribute(&id);
     }
     assert_eq!(token_client.balance(&recipient), 400); // 4 payments, no cap
+}
+
 // ── Allowance payment history (#837) ────────────────────────────────────────
 
 const HWEEK: u64 = 604_800;
@@ -880,6 +921,9 @@ fn history_is_empty_before_any_distribution() {
 
 #[test]
 fn history_records_a_payment() {
+    // TODO: implement history records a payment test
+}
+
 // ── Payment events (#838) ───────────────────────────────────────────────────
 
 const PWEEK: u64 = 604_800;
@@ -951,18 +995,34 @@ fn payment_event_emitted_on_every_payment() {
 fn history_captures_recipient_at_payment_time() {
     // `events().all()` reflects the most recent invocation. Each `distribute`
     // invocation must emit exactly one payment event; creation emits none.
-    assert_eq!(payment_event_count(&env), 0, "creation emits no payment event");
+    assert_eq!(
+        payment_event_count(&env),
+        0,
+        "creation emits no payment event"
+    );
 
     client.distribute(&id);
-    assert_eq!(payment_event_count(&env), 1, "first payment emits one event");
+    assert_eq!(
+        payment_event_count(&env),
+        1,
+        "first payment emits one event"
+    );
 
     env.ledger().with_mut(|l| l.timestamp = now + PWEEK + 1);
     client.distribute(&id);
-    assert_eq!(payment_event_count(&env), 1, "second payment emits one event");
+    assert_eq!(
+        payment_event_count(&env),
+        1,
+        "second payment emits one event"
+    );
 
     env.ledger().with_mut(|l| l.timestamp = now + 2 * PWEEK + 1);
     client.distribute(&id);
-    assert_eq!(payment_event_count(&env), 1, "third payment emits one event");
+    assert_eq!(
+        payment_event_count(&env),
+        1,
+        "third payment emits one event"
+    );
 }
 
 #[test]
@@ -990,18 +1050,8 @@ fn payment_event_uses_current_recipient_after_beneficiary_change() {
 fn history_for_missing_allowance_is_empty() {
     let (_env, client, _o, _r, _t) = setup(1_000);
     assert_eq!(client.get_allowance_history(&999).len(), 0);
-    client.update_beneficiary(&id, &new_recipient);
-    client.distribute(&id);
+}
 
-    let expected = (
-        client.address.clone(),
-        (symbol_short!("allow"), symbol_short!("payment"), id).into_val(&env),
-        (new_recipient.clone(), 100i128).into_val(&env),
-    );
-    assert!(
-        env.events().all().contains(expected),
-        "payment event must reflect the updated recipient"
-    );
 // ── Allowance expiration (#839) ─────────────────────────────────────────────
 
 const EWEEK: u64 = 604_800;
@@ -1031,7 +1081,14 @@ fn set_expiration_rejects_past_timestamp() {
     let (env, client, owner, recipient, token) = setup(1_000);
     let now = env.ledger().timestamp();
     env.ledger().with_mut(|l| l.timestamp = now + 1_000);
-    let id = client.create_allowance(&owner, &recipient, &token, &100, &Frequency::Once, &(now + 1_000));
+    let id = client.create_allowance(
+        &owner,
+        &recipient,
+        &token,
+        &100,
+        &Frequency::Once,
+        &(now + 1_000),
+    );
 
     let err = client
         .try_set_expiration(&id, &(now + 500)) // in the past relative to current ledger time

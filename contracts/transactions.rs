@@ -340,6 +340,9 @@ impl TransactionsContract {
     fn is_blocked(env: &Env, caller: &Address, destination: &Address) -> bool {
         env.storage()
             .persistent()
-            .has(&DataKey::BlacklistedDestination(caller.clone(), destination.clone()))
+            .has(&DataKey::BlacklistedDestination(
+                caller.clone(),
+                destination.clone(),
+            ))
     }
 }
