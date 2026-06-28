@@ -533,10 +533,8 @@ fn update_global_stats(env: &Env, is_violation: bool) {
 
     // Update average (simplified calculation)
     if stats.total_transactions_checked > 0 {
-        stats.avg_tx_per_window = stats
-            .total_violations
-            .saturating_mul(10_000)
-            / stats.total_transactions_checked;
+        stats.avg_tx_per_window =
+            stats.total_violations.saturating_mul(10_000) / stats.total_transactions_checked;
     }
 
     env.storage()
