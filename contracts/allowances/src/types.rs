@@ -59,9 +59,42 @@ pub struct Allowance {
     /// threshold (issue #845). A pending allowance is created `active = false`
     /// and only becomes active once an approver calls `approve_allowance`.
     pub pending_approval: bool,
+    /// Maximum cumulative amount that may ever be distributed for this
+    /// allowance (issue #836). `0` means unlimited. Enforced in `distribute`
+    /// against `amount × (distribution_count + 1)`.
+    pub spending_limit: i128,
     /// Ledger timestamp after which the allowance expires and distributions
     /// stop automatically (issue #839). `0` means it never expires.
     pub end_date: u64,
+}
+
+/// A single recorded payment in an allowance's distribution history (#837).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaymentRecord {
+    /// Amount transferred in this distribution.
+    pub amount: i128,
+    /// Ledger timestamp at which the payment was made.
+    pub timestamp: u64,
+    /// Recipient who received this payment (captured at payment time, since the
+    /// beneficiary can change between distributions).
+    pub recipient: Address,
+}
+
+/// Read-only usage analytics for an allowance (issue #846).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AllowanceAnalytics {
+    /// Sum of all amounts distributed so far (`amount` × `distribution_count`).
+    pub total_distributed: i128,
+    /// Number of successful distributions.
+    pub distribution_count: u64,
+    /// Mean payment per distribution
+    /// (`total_distributed` / `distribution_count`, or 0 when none yet).
+    pub average_payment: i128,
+    /// Owner's available balance in the allowance token — the funds that remain
+    /// available to back future distributions.
+    pub remaining: i128,
 }
 
 /// Persistent storage keys for the allowances contract.
@@ -80,6 +113,8 @@ pub enum DataKey {
     /// Amount above which a new allowance requires approval (#845).
     /// When unset, no allowance requires approval (backward compatible).
     ApprovalThreshold,
+    /// Ordered payment history for an allowance (#837).
+    AllowanceHistory(u64),
 }
 
 /// Error codes returned by the allowances contract.
@@ -107,6 +142,10 @@ pub enum AllowanceError {
     ApprovalRequired = 13,
     /// Approval threshold must be positive (#845)
     InvalidThreshold = 14,
+    /// Distribution would exceed the configured spending limit (#836)
+    SpendingLimitExceeded = 11,
+    /// Spending limit must be non-negative (#836)
+    InvalidLimit = 12,
     /// Allowance has passed its end date and is expired (#839)
     Expired = 11,
     /// Expiration timestamp must be in the future (or 0 to clear) (#839)
