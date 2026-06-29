@@ -110,8 +110,10 @@ pub fn credit_reward(
     set_reward_transaction(env, tx_id, &tx);
     set_reward_tx_counter(env, tx_id + 1);
 
-    env.events()
-        .publish(("rewards", "reward_credited"), (participant.clone(), amount, tx_id));
+    env.events().publish(
+        ("rewards", "reward_credited"),
+        (participant.clone(), amount, tx_id),
+    );
 
     Ok(tx)
 }
