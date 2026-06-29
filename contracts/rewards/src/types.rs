@@ -20,6 +20,7 @@ pub const PERSISTENT_TTL_BUMP: u32 = 6_307_200;
 /// | `LifetimeClaimed(Address)` | Persistent | Total rewards ever claimed (stroops) |
 /// | `RewardAccount(Address)` | Persistent | Full reward account metadata struct |
 /// | `RewardTransaction(u64)` | Persistent | Individual reward transaction record by ID |
+/// | `RewardIndex(Address)` | Persistent | Ordered list of tx IDs for a participant |
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
@@ -39,6 +40,11 @@ pub enum DataKey {
     RewardTransaction(u64),
     /// Monotonically incrementing counter for reward transaction IDs (instance storage).
     RewardTxCounter,
+    /// Per-participant ordered list of reward transaction IDs (persistent storage).
+    ///
+    /// Stores a `Vec<u64>` appended to on every `credit_reward` call, enabling
+    /// O(1) lookup of all transactions belonging to an address.
+    RewardIndex(Address),
 }
 
 // ── Enums ─────────────────────────────────────────────────────────────────────
