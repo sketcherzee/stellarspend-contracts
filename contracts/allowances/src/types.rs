@@ -134,22 +134,8 @@ pub enum AllowanceError {
     NotPaused = 9,
     /// Allowance is paused — distribution blocked (#833)
     Paused = 10,
-    /// No approver has been configured (#845)
-    ApproverNotConfigured = 11,
-    /// Allowance is not awaiting approval (#845)
-    NotPendingApproval = 12,
-    /// Allowance requires approval before this action (#845)
-    ApprovalRequired = 13,
-    /// Approval threshold must be positive (#845)
-    InvalidThreshold = 14,
-    /// Distribution would exceed the configured spending limit (#836)
-    SpendingLimitExceeded = 11,
-    /// Spending limit must be non-negative (#836)
-    InvalidLimit = 12,
-    /// Allowance has passed its end date and is expired (#839)
-    Expired = 11,
-    /// Expiration timestamp must be in the future (or 0 to clear) (#839)
-    InvalidExpiration = 12,
+    /// Cannot renew an allowance that is still active (#841/#842)
+    StillActive = 11,
 }
 
 impl From<AllowanceError> for soroban_sdk::Error {
