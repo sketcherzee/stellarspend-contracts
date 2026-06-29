@@ -92,7 +92,7 @@ impl AllowancesContract {
 
         // Large allowances require approval before they become active (#845).
         // When no threshold is configured, every allowance is active on
-        // creation (unchanged behaviour).
+       
         let requires_approval = match env
             .storage()
             .instance()
@@ -364,7 +364,8 @@ impl AllowancesContract {
     /// Reactivates it and resets the schedule to `start_time`. Only the owner may renew. (#841/#842)
     pub fn renew_allowance(env: Env, allowance_id: u64, start_time: u64) {
         let mut allowance: Allowance = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::Allowance(allowance_id))
             .unwrap_or_else(|| panic_with_error!(&env, AllowanceError::NotFound));
 
@@ -379,9 +380,15 @@ impl AllowancesContract {
         allowance.next_distribution = start_time;
 
         let owner = allowance.owner.clone();
-        env.storage().persistent().set(&DataKey::Allowance(allowance_id), &allowance);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Allowance(allowance_id), &allowance);
         env.events().publish(
-            (symbol_short!("allow"), symbol_short!("renewed"), allowance_id),
+            (
+                symbol_short!("allow"),
+                symbol_short!("renewed"),
+                allowance_id,
+            ),
             (owner, start_time),
         );
     }

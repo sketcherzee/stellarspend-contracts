@@ -24,8 +24,10 @@
 
 #![no_std]
 
+mod rollover;
 mod storage;
 mod types;
+pub use rollover::{apply_rollover, calculate_rollover, set_rollover_rate_bps};
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Map,
