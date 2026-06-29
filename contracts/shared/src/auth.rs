@@ -160,9 +160,7 @@ mod tests {
     }
 
     fn store_admin(env: &Env, admin: &Address) {
-        env.storage()
-            .instance()
-            .set(&SharedDataKey::Admin, admin);
+        env.storage().instance().set(&SharedDataKey::Admin, admin);
     }
 
     // --- get_admin ---
@@ -400,10 +398,7 @@ mod tests {
         env.mock_all_auths();
         let op = Address::generate(&env);
         env.as_contract(&id, || {
-            assert_eq!(
-                require_operator(&env, &op),
-                Err(SharedError::Unauthorized)
-            );
+            assert_eq!(require_operator(&env, &op), Err(SharedError::Unauthorized));
         });
     }
 
