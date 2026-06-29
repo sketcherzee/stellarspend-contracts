@@ -16,7 +16,12 @@ pub const SECONDS_PER_YEAR: u64 = 31_536_000; // 365 days
 /// Composes a duration in seconds from its component parts.
 ///
 /// Returns `Err(SharedError::ArithmeticOverflow)` if the total exceeds `u64::MAX`.
-pub fn duration_from_parts(days: u64, hours: u64, minutes: u64, secs: u64) -> Result<u64, SharedError> {
+pub fn duration_from_parts(
+    days: u64,
+    hours: u64,
+    minutes: u64,
+    secs: u64,
+) -> Result<u64, SharedError> {
     let d = days
         .checked_mul(SECONDS_PER_DAY)
         .ok_or(SharedError::ArithmeticOverflow)?;
@@ -98,7 +103,11 @@ pub fn periods_elapsed(env: &Env, start: u64, interval_secs: u64) -> u64 {
 }
 
 /// Errors with `SharedError::TooEarly` if the next period is not yet due.
-pub fn assert_period_due(env: &Env, last_execution: u64, interval_secs: u64) -> Result<(), SharedError> {
+pub fn assert_period_due(
+    env: &Env,
+    last_execution: u64,
+    interval_secs: u64,
+) -> Result<(), SharedError> {
     if !is_period_due(env, last_execution, interval_secs) {
         Err(SharedError::TooEarly)
     } else {

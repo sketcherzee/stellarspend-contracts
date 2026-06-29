@@ -516,12 +516,7 @@ pub fn save_budget_config_version(
 
     // OPTIMIZATION: Read version counter and history in two reads (unavoidable),
     // but avoid re-reads within this function.
-    let version: u32 = env
-        .storage()
-        .persistent()
-        .get(&key_counter)
-        .unwrap_or(0)
-        + 1;
+    let version: u32 = env.storage().persistent().get(&key_counter).unwrap_or(0) + 1;
 
     env.storage().persistent().set(&key_counter, &version);
 
