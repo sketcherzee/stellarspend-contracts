@@ -6,6 +6,7 @@
 
 #![no_std]
 
+pub mod events;
 pub mod rewards;
 pub mod storage;
 pub mod types;
@@ -13,6 +14,8 @@ pub mod validation;
 
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Vec};
 
+use crate::rewards::{credit_reward, debit_reward, register_reward_account};
+use crate::storage::get_reward_account;
 use crate::rewards::{credit_reward, register_reward_account};
 use crate::storage::{get_reward_account, get_reward_index};
 pub use crate::types::{DataKey, RewardAccount, RewardStatus, RewardTransaction, RewardType};
@@ -35,6 +38,8 @@ pub enum RewardsError {
     AccountNotFound = 6,
     /// Arithmetic overflow would occur.
     Overflow = 7,
+    /// Debit amount exceeds the current claimable balance.
+    InsufficientBalance = 8,
 }
 
 impl From<RewardsError> for soroban_sdk::Error {
@@ -139,6 +144,38 @@ impl RewardsContract {
         }
     }
 
+    /// Debits `amount` reward points from `participant`'s account.
+    ///
+    /// Only the contract admin may call this entry point. The amount must be
+    /// strictly positive and must not exceed the current claimable balance.
+    /// Both the claimable balance and the lifetime-claimed total are updated
+    /// atomically. A [`RewardTransaction`] record with status `Claimed` is
+    /// persisted and a `reward_debited` event is emitted.
+    ///
+    /// # Errors
+    /// Panics with `NotInitialized` if the contract has not been initialised.
+    /// Panics with `Unauthorized` if the caller is not the admin.
+    /// Panics with `AccountNotFound` if `participant` has no reward account.
+    /// Panics with `InvalidAmount` if `amount` is zero or negative.
+    /// Panics with `InsufficientBalance` if `amount` exceeds the current balance.
+    /// Panics with `Overflow` if incrementing lifetime_claimed would overflow `i128`.
+    pub fn debit_reward(
+        env: Env,
+        participant: Address,
+        amount: i128,
+        reward_type: RewardType,
+    ) -> RewardTransaction {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, RewardsError::NotInitialized));
+        admin.require_auth();
+
+        match debit_reward(&env, &participant, amount, reward_type) {
+            Ok(tx) => tx,
+            Err(e) => panic_with_error!(&env, e),
+        }
     /// Returns the ordered list of reward transaction IDs credited to `participant`.
     ///
     /// Returns an empty `Vec<u64>` if the account has no transactions yet or is

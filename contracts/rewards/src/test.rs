@@ -470,6 +470,177 @@ fn test_credit_reward_i128_max_is_accepted() {
     assert_eq!(account.lifetime_earned, i128::MAX);
 }
 
+// ── Reward debiting tests ─────────────────────────────────────────────────────
+
+#[test]
+fn test_debit_reward_reduces_balance() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &1_000_000, &RewardType::SpendingLimit);
+    client.debit_reward(&admin, &user, &400_000, &RewardType::SpendingLimit);
+    let account = client.get_account(&user).unwrap();
+    assert_eq!(account.balance, 600_000);
+}
+
+#[test]
+fn test_debit_reward_updates_lifetime_claimed() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &1_000_000, &RewardType::SavingsGoal);
+    client.debit_reward(&admin, &user, &300_000, &RewardType::SavingsGoal);
+    let account = client.get_account(&user).unwrap();
+    assert_eq!(account.lifetime_claimed, 300_000);
+}
+
+#[test]
+fn test_debit_reward_does_not_change_lifetime_earned() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &500_000, &RewardType::Streak);
+    client.debit_reward(&admin, &user, &200_000, &RewardType::Streak);
+    let account = client.get_account(&user).unwrap();
+    assert_eq!(account.lifetime_earned, 500_000);
+}
+
+#[test]
+fn test_debit_reward_returns_claimed_transaction() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &1_000_000, &RewardType::Referral);
+    let tx = client.debit_reward(&admin, &user, &250_000, &RewardType::Referral);
+    assert_eq!(tx.recipient, user);
+    assert_eq!(tx.amount, 250_000);
+    assert_eq!(tx.reward_type, RewardType::Referral);
+    assert_eq!(tx.status, RewardStatus::Claimed);
+}
+
+#[test]
+fn test_debit_reward_exact_balance_succeeds() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &1_000_000, &RewardType::ManualGrant);
+    client.debit_reward(&admin, &user, &1_000_000, &RewardType::ManualGrant);
+    let account = client.get_account(&user).unwrap();
+    assert_eq!(account.balance, 0);
+    assert_eq!(account.lifetime_claimed, 1_000_000);
+}
+
+#[test]
+fn test_debit_reward_accumulates_across_multiple_debits() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &1_000_000, &RewardType::Streak);
+    client.debit_reward(&admin, &user, &100_000, &RewardType::Streak);
+    client.debit_reward(&admin, &user, &200_000, &RewardType::Streak);
+    client.debit_reward(&admin, &user, &300_000, &RewardType::Streak);
+    let account = client.get_account(&user).unwrap();
+    assert_eq!(account.balance, 400_000);
+    assert_eq!(account.lifetime_claimed, 600_000);
+}
+
+#[test]
+fn test_debit_reward_assigns_incrementing_tx_ids() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &1_000_000, &RewardType::Streak);
+    let tx0 = client.debit_reward(&admin, &user, &100, &RewardType::Streak);
+    let tx1 = client.debit_reward(&admin, &user, &200, &RewardType::Streak);
+    // tx id 0 was consumed by the credit, so debit ids start at 1
+    assert_eq!(tx1.id, tx0.id + 1);
+}
+
+#[test]
+fn test_debit_reward_persists_transaction_record() {
+    let (env, admin, user, client) = setup_with_user();
+    let contract_id = client.address.clone();
+    client.credit_reward(&admin, &user, &1_000_000, &RewardType::ManualGrant);
+    let tx = client.debit_reward(&admin, &user, &500_000, &RewardType::ManualGrant);
+    let tx_id = tx.id;
+    env.as_contract(&contract_id, || {
+        let stored = get_reward_transaction(&env, tx_id);
+        assert!(stored.is_some());
+        let stored = stored.unwrap();
+        assert_eq!(stored.amount, 500_000);
+        assert_eq!(stored.status, RewardStatus::Claimed);
+    });
+}
+
+#[test]
+fn test_debit_reward_scalar_storage_matches_account() {
+    let (env, admin, user, client) = setup_with_user();
+    let contract_id = client.address.clone();
+    client.credit_reward(&admin, &user, &1_000_000, &RewardType::SpendingLimit);
+    client.debit_reward(&admin, &user, &300_000, &RewardType::SpendingLimit);
+    let account = client.get_account(&user).unwrap();
+    env.as_contract(&contract_id, || {
+        assert_eq!(get_reward_balance(&env, &user), account.balance);
+        assert_eq!(get_lifetime_claimed(&env, &user), account.lifetime_claimed);
+    });
+}
+
+#[test]
+fn test_debit_reward_updates_last_updated() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &1_000_000, &RewardType::Referral);
+    let before = client.get_account(&user).unwrap().last_updated;
+    client.debit_reward(&admin, &user, &500_000, &RewardType::Referral);
+    let after = client.get_account(&user).unwrap().last_updated;
+    assert!(after >= before);
+}
+
+#[test]
+fn test_debit_reward_multiple_users_are_independent() {
+    let (env, admin, client) = setup();
+    client.initialize(&admin);
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+    client.register_account(&user_a);
+    client.register_account(&user_b);
+
+    client.credit_reward(&admin, &user_a, &1_000_000, &RewardType::Streak);
+    client.credit_reward(&admin, &user_b, &2_000_000, &RewardType::Streak);
+    client.debit_reward(&admin, &user_a, &400_000, &RewardType::Streak);
+
+    let a = client.get_account(&user_a).unwrap();
+    let b = client.get_account(&user_b).unwrap();
+    assert_eq!(a.balance, 600_000);
+    assert_eq!(b.balance, 2_000_000);
+}
+
+#[test]
+#[should_panic]
+fn test_debit_reward_overdraft_panics() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &500_000, &RewardType::Streak);
+    client.debit_reward(&admin, &user, &500_001, &RewardType::Streak);
+}
+
+#[test]
+#[should_panic]
+fn test_debit_reward_zero_amount_panics() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &1_000_000, &RewardType::Streak);
+    client.debit_reward(&admin, &user, &0, &RewardType::Streak);
+}
+
+#[test]
+#[should_panic]
+fn test_debit_reward_negative_amount_panics() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &1_000_000, &RewardType::Streak);
+    client.debit_reward(&admin, &user, &-1, &RewardType::Streak);
+}
+
+#[test]
+#[should_panic]
+fn test_debit_reward_unregistered_account_panics() {
+    let (env, admin, client) = setup();
+    client.initialize(&admin);
+    let stranger = Address::generate(&env);
+    client.debit_reward(&admin, &stranger, &1_000, &RewardType::Streak);
+}
+
+#[test]
+#[should_panic]
+fn test_debit_reward_before_init_panics() {
+    let (env, admin, client) = setup();
+    let user = Address::generate(&env);
+    client.debit_reward(&admin, &user, &1_000, &RewardType::Streak);
+}
+
 // ── Data model tests (#877) ───────────────────────────────────────────────────
 
 #[test]

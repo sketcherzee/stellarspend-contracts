@@ -52,3 +52,14 @@ pub fn validate_reward_amount(amount: i128) -> Result<(), RewardsError> {
     }
     Ok(())
 }
+
+/// Asserts that `balance` is sufficient to cover `amount`.
+///
+/// # Errors
+/// Returns `RewardsError::InsufficientBalance` if `amount` exceeds `balance`.
+pub fn validate_sufficient_balance(balance: i128, amount: i128) -> Result<(), RewardsError> {
+    if amount > balance {
+        return Err(RewardsError::InsufficientBalance);
+    }
+    Ok(())
+}
