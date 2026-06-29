@@ -5,8 +5,8 @@ use soroban_sdk::{testutils::Address as _, Address, Env};
 use crate::{
     storage::{
         get_lifetime_claimed, get_lifetime_earned, get_reward_account, get_reward_balance,
-        get_reward_transaction, get_reward_tx_counter, has_reward_account, set_lifetime_claimed,
-        set_lifetime_earned, set_reward_account, set_reward_balance,
+        get_reward_index, get_reward_transaction, get_reward_tx_counter, has_reward_account,
+        set_lifetime_claimed, set_lifetime_earned, set_reward_account, set_reward_balance,
     },
     types::{RewardAccount, RewardStatus, RewardTransaction, RewardType},
     RewardsContract, RewardsContractClient,
@@ -601,4 +601,97 @@ fn test_all_reward_types_can_be_used_in_transaction() {
         };
         assert_eq!(tx.reward_type, reward_type);
     }
+}
+
+// ── Reward Ledger Index tests (#873) ──────────────────────────────────────────
+
+#[test]
+fn test_get_transactions_for_empty_before_any_credit() {
+    let (env, admin, client) = setup();
+    client.initialize(&admin);
+    let user = Address::generate(&env);
+    client.register_account(&user);
+    let ids = client.get_transactions_for(&user);
+    assert_eq!(ids.len(), 0);
+}
+
+#[test]
+fn test_get_transactions_for_returns_empty_for_unregistered() {
+    let (env, admin, client) = setup();
+    client.initialize(&admin);
+    let stranger = Address::generate(&env);
+    let ids = client.get_transactions_for(&stranger);
+    assert_eq!(ids.len(), 0);
+}
+
+#[test]
+fn test_get_transactions_for_appends_after_credit() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &100, &RewardType::Streak);
+    let ids = client.get_transactions_for(&user);
+    assert_eq!(ids.len(), 1);
+    assert_eq!(ids.get(0).unwrap(), 0u64);
+}
+
+#[test]
+fn test_get_transactions_for_multiple_credits() {
+    let (_env, admin, user, client) = setup_with_user();
+    client.credit_reward(&admin, &user, &100, &RewardType::Streak);
+    client.credit_reward(&admin, &user, &200, &RewardType::Referral);
+    client.credit_reward(&admin, &user, &300, &RewardType::ManualGrant);
+    let ids = client.get_transactions_for(&user);
+    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.get(0).unwrap(), 0u64);
+    assert_eq!(ids.get(1).unwrap(), 1u64);
+    assert_eq!(ids.get(2).unwrap(), 2u64);
+}
+
+#[test]
+fn test_get_transactions_for_index_matches_stored_transactions() {
+    let (env, admin, user, client) = setup_with_user();
+    let contract_id = client.address.clone();
+    client.credit_reward(&admin, &user, &500, &RewardType::SavingsGoal);
+    client.credit_reward(&admin, &user, &750, &RewardType::SpendingLimit);
+
+    let ids = client.get_transactions_for(&user);
+    env.as_contract(&contract_id, || {
+        for i in 0..ids.len() {
+            let tx_id = ids.get(i).unwrap();
+            let tx = get_reward_transaction(&env, tx_id).expect("tx should exist");
+            assert_eq!(tx.id, tx_id);
+            assert_eq!(tx.recipient, user);
+        }
+    });
+}
+
+#[test]
+fn test_get_transactions_for_users_are_independent() {
+    let (env, admin, client) = setup();
+    client.initialize(&admin);
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+    client.register_account(&user_a);
+    client.register_account(&user_b);
+
+    client.credit_reward(&admin, &user_a, &100, &RewardType::Streak);
+    client.credit_reward(&admin, &user_b, &200, &RewardType::Streak);
+    client.credit_reward(&admin, &user_a, &300, &RewardType::Streak);
+
+    let ids_a = client.get_transactions_for(&user_a);
+    let ids_b = client.get_transactions_for(&user_b);
+
+    assert_eq!(ids_a.len(), 2);
+    assert_eq!(ids_b.len(), 1);
+}
+
+#[test]
+fn test_reward_index_storage_helper_directly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let user = Address::generate(&env);
+    let contract_id = env.register(RewardsContract, ());
+    env.as_contract(&contract_id, || {
+        let empty = get_reward_index(&env, &user);
+        assert_eq!(empty.len(), 0);
+    });
 }

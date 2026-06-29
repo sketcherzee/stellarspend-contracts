@@ -11,10 +11,10 @@ pub mod storage;
 pub mod types;
 pub mod validation;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Vec};
 
 use crate::rewards::{credit_reward, register_reward_account};
-use crate::storage::get_reward_account;
+use crate::storage::{get_reward_account, get_reward_index};
 pub use crate::types::{DataKey, RewardAccount, RewardStatus, RewardTransaction, RewardType};
 
 /// Error codes for the rewards contract.
@@ -137,6 +137,15 @@ impl RewardsContract {
             Ok(tx) => tx,
             Err(e) => panic_with_error!(&env, e),
         }
+    }
+
+    /// Returns the ordered list of reward transaction IDs credited to `participant`.
+    ///
+    /// Returns an empty `Vec<u64>` if the account has no transactions yet or is
+    /// not registered. Callers can pair each returned ID with
+    /// `get_reward_transaction(id)` to retrieve full transaction details.
+    pub fn get_transactions_for(env: Env, participant: Address) -> Vec<u64> {
+        get_reward_index(&env, &participant)
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────
