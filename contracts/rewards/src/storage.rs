@@ -4,7 +4,7 @@
 //! ledger state expiry. Each helper follows the read-modify-write pattern and
 //! bumps the TTL on every access to keep entries alive.
 
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{vec, Address, Env, Vec};
 
 use crate::types::{DataKey, RewardAccount, RewardTransaction, PERSISTENT_TTL_BUMP};
 
@@ -168,6 +168,41 @@ pub fn get_reward_transaction(env: &Env, id: u64) -> Option<RewardTransaction> {
 pub fn set_reward_transaction(env: &Env, id: u64, tx: &RewardTransaction) {
     let key = DataKey::RewardTransaction(id);
     env.storage().persistent().set(&key, tx);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_BUMP, PERSISTENT_TTL_BUMP);
+}
+
+// ── Reward Ledger Index ────────────────────────────────────────────────────────
+
+/// Returns the ordered list of reward transaction IDs credited to `account`.
+///
+/// Returns an empty `Vec` if no transactions have been credited yet.
+pub fn get_reward_index(env: &Env, account: &Address) -> Vec<u64> {
+    let key = DataKey::RewardIndex(account.clone());
+    let result = env
+        .storage()
+        .persistent()
+        .get::<DataKey, Vec<u64>>(&key)
+        .unwrap_or_else(|| vec![env]);
+    if !result.is_empty() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_BUMP, PERSISTENT_TTL_BUMP);
+    }
+    result
+}
+
+/// Appends `tx_id` to the reward transaction index for `account`.
+pub fn append_reward_index(env: &Env, account: &Address, tx_id: u64) {
+    let key = DataKey::RewardIndex(account.clone());
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get::<DataKey, Vec<u64>>(&key)
+        .unwrap_or_else(|| vec![env]);
+    ids.push_back(tx_id);
+    env.storage().persistent().set(&key, &ids);
     env.storage()
         .persistent()
         .extend_ttl(&key, PERSISTENT_TTL_BUMP, PERSISTENT_TTL_BUMP);

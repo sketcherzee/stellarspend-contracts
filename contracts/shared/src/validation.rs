@@ -176,10 +176,7 @@ mod tests {
 
     #[test]
     fn positive_amount_rejects_zero() {
-        assert_eq!(
-            validate_positive_amount(0),
-            Err(SharedError::InvalidAmount)
-        );
+        assert_eq!(validate_positive_amount(0), Err(SharedError::InvalidAmount));
     }
 
     #[test]

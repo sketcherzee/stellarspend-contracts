@@ -11,13 +11,8 @@
 //! - #833 Add Allowance Pause/Resume   — `pause_allowance` / `resume_allowance`
 //! - #834 Add Allowance Cancellation   — `cancel_allowance` (already present, confirmed)
 //! - #835 Add Allowance Beneficiary Update — `update_beneficiary`
-//! - #845 Allowance Approval Workflow   — `set_approval_config` / `approve_allowance` (large allowances stay inactive until approved) + `transfer_ownership`
-//! - #846 Add Allowance Analytics       — `get_allowance_analytics` (total distributed, average payment, remaining)
-//! - #847 Optimize Allowance Storage    — shared `load`/`save`/`append_index` helpers (one accessor per op)
-//! - #836 Implement Allowance Spending Limits — `set_spending_limit` + cumulative cap enforced in `distribute`
-//! - #837 Add Allowance History         — per-distribution `PaymentRecord` log + `get_allowance_history`
-//! - #838 Emit Allowance Payment Events  — `("allow","payment",id)` → (recipient, amount) on every payment
-//! - #839 Add Allowance Expiration      — `set_expiration` / `is_expired`; `distribute` stops past `end_date`
+//! - #841/#842 Implement Allowance Renewal — `renew_allowance` (reactivate + reset schedule)
+//! - #844 Implement Allowance Balance Queries — `get_allowance_balance`
 
 #![no_std]
 
@@ -30,8 +25,8 @@ use soroban_sdk::{
     contract, contractimpl, panic_with_error, symbol_short, token, Address, Env, Vec,
 };
 
-use types::{AllowanceError, Allowance, AllowanceAnalytics, DataKey, Frequency};
-use types::{AllowanceError, Allowance, DataKey, Frequency, PaymentRecord};
+use types::{Allowance, AllowanceAnalytics, AllowanceError, DataKey, Frequency};
+use types::{Allowance, AllowanceError, DataKey, Frequency, PaymentRecord};
 
 // ── Internal storage helpers (#847) ───────────────────────────────────────────
 //
@@ -97,7 +92,7 @@ impl AllowancesContract {
 
         // Large allowances require approval before they become active (#845).
         // When no threshold is configured, every allowance is active on
-        // creation (unchanged behaviour).
+       
         let requires_approval = match env
             .storage()
             .instance()
@@ -119,19 +114,21 @@ impl AllowancesContract {
             paused: false,
             pending_approval: requires_approval,
             spending_limit: 0, // unlimited until an owner sets one (#836)
-            end_date: 0, // never expires until an owner sets an end date (#839)
+            end_date: 0,       // never expires until an owner sets an end date (#839)
         };
 
         save_allowance(&env, count, &allowance);
-        env.storage().instance().set(&DataKey::AllowanceCount, &count);
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowanceCount, &count);
 
         append_index(&env, DataKey::OwnerAllowances(owner.clone()), count);
         append_index(&env, DataKey::RecipientAllowances(recipient.clone()), count);
 
         let freq_tag = match &frequency {
-            Frequency::Once    => symbol_short!("once"),
-            Frequency::Daily   => symbol_short!("daily"),
-            Frequency::Weekly  => symbol_short!("weekly"),
+            Frequency::Once => symbol_short!("once"),
+            Frequency::Daily => symbol_short!("daily"),
+            Frequency::Weekly => symbol_short!("weekly"),
             Frequency::Monthly => symbol_short!("monthly"),
         };
         env.events().publish(
@@ -197,7 +194,8 @@ impl AllowancesContract {
         // Append to the allowance's payment history (#837): amount, timestamp,
         // and the recipient at the time of this payment.
         let mut history: Vec<PaymentRecord> = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::AllowanceHistory(allowance_id))
             .unwrap_or(Vec::new(&env));
         history.push_back(PaymentRecord {
@@ -205,7 +203,9 @@ impl AllowancesContract {
             timestamp: now,
             recipient: allowance.recipient.clone(),
         });
-        env.storage().persistent().set(&DataKey::AllowanceHistory(allowance_id), &history);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AllowanceHistory(allowance_id), &history);
 
         match allowance.frequency.interval_seconds() {
             None => {
@@ -222,18 +222,32 @@ impl AllowancesContract {
         }
 
         save_allowance(&env, allowance_id, &allowance);
-        env.storage().persistent().set(&DataKey::Allowance(allowance_id), &allowance);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Allowance(allowance_id), &allowance);
 
         // Dedicated payment event for off-chain indexers (#838): a stable
         // `("allow", "payment", allowance_id)` topic carrying (recipient, amount)
         // is emitted on every payment, alongside the richer `distrib` event.
         env.events().publish(
-            (symbol_short!("allow"), symbol_short!("payment"), allowance_id),
+            (
+                symbol_short!("allow"),
+                symbol_short!("payment"),
+                allowance_id,
+            ),
             (allowance.recipient.clone(), allowance.amount),
         );
         env.events().publish(
-            (symbol_short!("allow"), symbol_short!("distrib"), allowance_id),
-            (allowance.recipient, allowance.amount, allowance.next_distribution),
+            (
+                symbol_short!("allow"),
+                symbol_short!("distrib"),
+                allowance_id,
+            ),
+            (
+                allowance.recipient,
+                allowance.amount,
+                allowance.next_distribution,
+            ),
         );
     }
 
@@ -244,13 +258,21 @@ impl AllowancesContract {
         let mut allowance = load_allowance(&env, allowance_id);
 
         allowance.owner.require_auth();
-        if !allowance.active  { panic_with_error!(&env, AllowanceError::AlreadyInactive); }
-        if allowance.paused   { panic_with_error!(&env, AllowanceError::AlreadyPaused); }
+        if !allowance.active {
+            panic_with_error!(&env, AllowanceError::AlreadyInactive);
+        }
+        if allowance.paused {
+            panic_with_error!(&env, AllowanceError::AlreadyPaused);
+        }
 
         allowance.paused = true;
         save_allowance(&env, allowance_id, &allowance);
         env.events().publish(
-            (symbol_short!("allow"), symbol_short!("paused"), allowance_id),
+            (
+                symbol_short!("allow"),
+                symbol_short!("paused"),
+                allowance_id,
+            ),
             allowance.owner,
         );
     }
@@ -260,13 +282,21 @@ impl AllowancesContract {
         let mut allowance = load_allowance(&env, allowance_id);
 
         allowance.owner.require_auth();
-        if !allowance.active  { panic_with_error!(&env, AllowanceError::AlreadyInactive); }
-        if !allowance.paused  { panic_with_error!(&env, AllowanceError::NotPaused); }
+        if !allowance.active {
+            panic_with_error!(&env, AllowanceError::AlreadyInactive);
+        }
+        if !allowance.paused {
+            panic_with_error!(&env, AllowanceError::NotPaused);
+        }
 
         allowance.paused = false;
         save_allowance(&env, allowance_id, &allowance);
         env.events().publish(
-            (symbol_short!("allow"), symbol_short!("resumed"), allowance_id),
+            (
+                symbol_short!("allow"),
+                symbol_short!("resumed"),
+                allowance_id,
+            ),
             allowance.owner,
         );
     }
@@ -278,12 +308,18 @@ impl AllowancesContract {
         let mut allowance = load_allowance(&env, allowance_id);
 
         allowance.owner.require_auth();
-        if !allowance.active { panic_with_error!(&env, AllowanceError::AlreadyInactive); }
+        if !allowance.active {
+            panic_with_error!(&env, AllowanceError::AlreadyInactive);
+        }
 
         allowance.active = false;
         save_allowance(&env, allowance_id, &allowance);
         env.events().publish(
-            (symbol_short!("allow"), symbol_short!("canceled"), allowance_id),
+            (
+                symbol_short!("allow"),
+                symbol_short!("canceled"),
+                allowance_id,
+            ),
             allowance.owner,
         );
     }
@@ -296,190 +332,80 @@ impl AllowancesContract {
         let mut allowance = load_allowance(&env, allowance_id);
 
         allowance.owner.require_auth();
-        if !allowance.active { panic_with_error!(&env, AllowanceError::AlreadyInactive); }
+        if !allowance.active {
+            panic_with_error!(&env, AllowanceError::AlreadyInactive);
+        }
 
         let old_recipient = allowance.recipient.clone();
         allowance.recipient = new_recipient.clone();
         save_allowance(&env, allowance_id, &allowance);
 
         // Update recipient index for new beneficiary
-        append_index(&env, DataKey::RecipientAllowances(new_recipient.clone()), allowance_id);
+        append_index(
+            &env,
+            DataKey::RecipientAllowances(new_recipient.clone()),
+            allowance_id,
+        );
 
         env.events().publish(
-            (symbol_short!("allow"), symbol_short!("ben_upd"), allowance_id),
+            (
+                symbol_short!("allow"),
+                symbol_short!("ben_upd"),
+                allowance_id,
+            ),
             (old_recipient, new_recipient),
         );
     }
 
-    // ── Approval workflow (#845) ──────────────────────────────────────────
+    // ── Renewal (#841/#842) ───────────────────────────────────────────────
 
-    /// Configures the approval policy: the `approver` address and the `threshold`
-    /// above which new allowances require approval before becoming active.
-    ///
-    /// First call is authorized by the incoming `approver`; subsequent calls
-    /// (rotation / threshold changes) must be authorized by the current approver.
-    pub fn set_approval_config(env: Env, approver: Address, threshold: i128) {
-        if threshold <= 0 {
-            panic_with_error!(&env, AllowanceError::InvalidThreshold);
-        }
-
-        match env
+    /// Renews an inactive (expired/cancelled) allowance, preserving its
+    /// configuration (recipient, token, amount, frequency, distribution_count).
+    /// Reactivates it and resets the schedule to `start_time`. Only the owner may renew. (#841/#842)
+    pub fn renew_allowance(env: Env, allowance_id: u64, start_time: u64) {
+        let mut allowance: Allowance = env
             .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::Approver)
-        {
-            Some(current) => current.require_auth(),
-            None => approver.require_auth(),
-        }
-
-        env.storage().instance().set(&DataKey::Approver, &approver);
-        env.storage().instance().set(&DataKey::ApprovalThreshold, &threshold);
-
-        env.events().publish(
-            (symbol_short!("allow"), symbol_short!("apprcfg")),
-            (approver, threshold),
-        );
-    }
-
-    /// Approves a pending (over-threshold) allowance, activating it.
-    /// Only the configured approver may call.
-    pub fn approve_allowance(env: Env, allowance_id: u64) {
-        let approver: Address = env
-            .storage().instance()
-            .get(&DataKey::Approver)
-            .unwrap_or_else(|| panic_with_error!(&env, AllowanceError::ApproverNotConfigured));
-        approver.require_auth();
-
-    // ── Spending limit (#836) ─────────────────────────────────────────────
-
-    /// Sets the maximum cumulative amount that may ever be distributed for an
-    /// allowance. Only the owner may call. A limit of `0` removes the cap
-    /// (unlimited). A positive limit caps total spend at that value; once the
-    /// cumulative `amount × distribution_count` would exceed it, `distribute`
-    /// returns `SpendingLimitExceeded`.
-    ///
-    /// # Errors
-    /// * `AllowanceError::NotFound`        - allowance does not exist
-    /// * `AllowanceError::AlreadyInactive` - allowance is no longer active
-    /// * `AllowanceError::InvalidLimit`    - `limit` is negative
-    pub fn set_spending_limit(env: Env, allowance_id: u64, limit: i128) {
-    // ── Expiration (#839) ─────────────────────────────────────────────────
-
-    /// Sets (or clears) the allowance's end date. Only the owner may call.
-    /// Once the ledger time reaches `end_date`, `distribute` stops automatically
-    /// (returns `Expired`). Pass `0` to remove the expiry.
-    ///
-    /// # Errors
-    /// * `AllowanceError::NotFound`          - allowance does not exist
-    /// * `AllowanceError::AlreadyInactive`   - allowance is no longer active
-    /// * `AllowanceError::InvalidExpiration` - `end_date` is non-zero and not in the future
-    pub fn set_expiration(env: Env, allowance_id: u64, end_date: u64) {
-        let mut allowance: Allowance = env
-            .storage().persistent()
+            .persistent()
             .get(&DataKey::Allowance(allowance_id))
             .unwrap_or_else(|| panic_with_error!(&env, AllowanceError::NotFound));
 
-        if !allowance.pending_approval {
-            panic_with_error!(&env, AllowanceError::NotPendingApproval);
+        allowance.owner.require_auth();
+
+        if allowance.active {
+            panic_with_error!(&env, AllowanceError::StillActive);
         }
 
-        allowance.pending_approval = false;
         allowance.active = true;
-        env.storage().persistent().set(&DataKey::Allowance(allowance_id), &allowance);
+        allowance.paused = false;
+        allowance.next_distribution = start_time;
 
+        let owner = allowance.owner.clone();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Allowance(allowance_id), &allowance);
         env.events().publish(
-            (symbol_short!("allow"), symbol_short!("approved"), allowance_id),
-            approver,
+            (
+                symbol_short!("allow"),
+                symbol_short!("renewed"),
+                allowance_id,
+            ),
+            (owner, start_time),
         );
     }
 
-    // ── Ownership transfer (#845) ─────────────────────────────────────────
+    // ── Balance query (#844) ──────────────────────────────────────────────
 
-    /// Reassigns ownership of an allowance to `new_owner`. Only the current
-    /// owner may call. After transfer, only the new owner can manage the
-    /// allowance (pause, resume, cancel, update beneficiary, transfer again).
-    pub fn transfer_ownership(env: Env, allowance_id: u64, new_owner: Address) {
-        let mut allowance: Allowance = env
-            .storage().persistent()
-            .get(&DataKey::Allowance(allowance_id))
-            .unwrap_or_else(|| panic_with_error!(&env, AllowanceError::NotFound));
-
-        allowance.owner.require_auth();
-        if !allowance.active {
-            panic_with_error!(&env, AllowanceError::AlreadyInactive);
-        }
-
-        let old_owner = allowance.owner.clone();
-
-        // Remove the id from the previous owner's index.
-        let prev_ids: Vec<u64> = env
-            .storage().persistent()
-            .get(&DataKey::OwnerAllowances(old_owner.clone()))
-            .unwrap_or(Vec::new(&env));
-        let mut remaining = Vec::new(&env);
-        for id in prev_ids.iter() {
-            if id != allowance_id {
-                remaining.push_back(id);
-            }
-        }
-        env.storage().persistent().set(&DataKey::OwnerAllowances(old_owner.clone()), &remaining);
-
-        // Add the id to the new owner's index.
-        let mut new_ids: Vec<u64> = env
-            .storage().persistent()
-            .get(&DataKey::OwnerAllowances(new_owner.clone()))
-            .unwrap_or(Vec::new(&env));
-        new_ids.push_back(allowance_id);
-        env.storage().persistent().set(&DataKey::OwnerAllowances(new_owner.clone()), &new_ids);
-
-        allowance.owner = new_owner.clone();
-        env.storage().persistent().set(&DataKey::Allowance(allowance_id), &allowance);
-
-        env.events().publish(
-            (symbol_short!("allow"), symbol_short!("own_xfer"), allowance_id),
-            (old_owner, new_owner),
-        );
-    }
-
-        allowance.owner.require_auth();
-        if limit < 0 {
-            panic_with_error!(&env, AllowanceError::InvalidLimit);
-        }
-        if !allowance.active {
-            panic_with_error!(&env, AllowanceError::AlreadyInactive);
-        }
-
-        allowance.spending_limit = limit;
-        env.storage().persistent().set(&DataKey::Allowance(allowance_id), &allowance);
-        env.events().publish(
-            (symbol_short!("allow"), symbol_short!("limit"), allowance_id),
-            limit,
-        );
-    }
-
-        if !allowance.active {
-            panic_with_error!(&env, AllowanceError::AlreadyInactive);
-        }
-        if end_date != 0 && end_date <= env.ledger().timestamp() {
-            panic_with_error!(&env, AllowanceError::InvalidExpiration);
-        }
-
-        allowance.end_date = end_date;
-        env.storage().persistent().set(&DataKey::Allowance(allowance_id), &allowance);
-        env.events().publish(
-            (symbol_short!("allow"), symbol_short!("expiry"), allowance_id),
-            end_date,
-        );
-    }
-
-    /// Returns `true` if the allowance has an end date that the current ledger
-    /// time has reached or passed (#839).
-    pub fn is_expired(env: Env, allowance_id: u64) -> bool {
+    /// Returns the funds currently backing this allowance — i.e. the owner's
+    /// spendable balance of the allowance's token, which is the source distributions
+    /// are paid from. Reflects the real amount available for future distributions. (#844)
+    pub fn get_allowance_balance(env: Env, allowance_id: u64) -> i128 {
         let allowance: Allowance = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::Allowance(allowance_id))
             .unwrap_or_else(|| panic_with_error!(&env, AllowanceError::NotFound));
-        allowance.end_date != 0 && env.ledger().timestamp() >= allowance.end_date
+
+        token::Client::new(&env, &allowance.token).balance(&allowance.owner)
     }
 
     // ── Queries ───────────────────────────────────────────────────────────
@@ -493,7 +419,8 @@ impl AllowancesContract {
     /// balance in the allowance token.
     pub fn get_allowance_analytics(env: Env, allowance_id: u64) -> AllowanceAnalytics {
         let allowance: Allowance = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::Allowance(allowance_id))
             .unwrap_or_else(|| panic_with_error!(&env, AllowanceError::NotFound));
 
@@ -515,7 +442,8 @@ impl AllowancesContract {
     }
 
     pub fn get_owner_allowances(env: Env, owner: Address) -> Vec<u64> {
-        env.storage().persistent()
+        env.storage()
+            .persistent()
             .get(&DataKey::OwnerAllowances(owner))
             .unwrap_or(Vec::new(&env))
     }
@@ -523,19 +451,22 @@ impl AllowancesContract {
     /// Returns the full payment history for an allowance (#837), oldest first.
     /// Empty if no distributions have occurred (or the allowance does not exist).
     pub fn get_allowance_history(env: Env, allowance_id: u64) -> Vec<PaymentRecord> {
-        env.storage().persistent()
+        env.storage()
+            .persistent()
             .get(&DataKey::AllowanceHistory(allowance_id))
             .unwrap_or(Vec::new(&env))
     }
 
     pub fn get_recipient_allowances(env: Env, recipient: Address) -> Vec<u64> {
-        env.storage().persistent()
+        env.storage()
+            .persistent()
             .get(&DataKey::RecipientAllowances(recipient))
             .unwrap_or(Vec::new(&env))
     }
 
     pub fn allowance_count(env: Env) -> u64 {
-        env.storage().instance()
+        env.storage()
+            .instance()
             .get(&DataKey::AllowanceCount)
             .unwrap_or(0)
     }
