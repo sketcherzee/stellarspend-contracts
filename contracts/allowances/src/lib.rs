@@ -92,7 +92,7 @@ impl AllowancesContract {
 
         // Large allowances require approval before they become active (#845).
         // When no threshold is configured, every allowance is active on
-        // creation (unchanged behaviour).
+       
         let requires_approval = match env
             .storage()
             .instance()
