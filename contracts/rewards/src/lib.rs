@@ -6,17 +6,16 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, panic_with_error, Address, Env};
+pub mod rewards;
+pub mod storage;
+pub mod types;
+pub mod validation;
 
-/// Storage keys for the rewards contract.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DataKey {
-    /// Contract administrator address.
-    Admin,
-    /// Whether the contract has been initialised.
-    Initialized,
-}
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env};
+
+use crate::rewards::register_reward_account;
+use crate::storage::get_reward_account;
+pub use crate::types::{DataKey, RewardAccount, RewardStatus, RewardTransaction, RewardType};
 
 /// Error codes for the rewards contract.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -28,6 +27,8 @@ pub enum RewardsError {
     Unauthorized = 2,
     /// Contract has already been initialised.
     AlreadyInitialized = 3,
+    /// Reward account already exists for this address.
+    AccountAlreadyRegistered = 4,
 }
 
 impl From<RewardsError> for soroban_sdk::Error {
@@ -59,8 +60,7 @@ impl RewardsContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Initialized, &true);
 
-        env.events()
-            .publish(("rewards", "initialized"), admin);
+        env.events().publish(("rewards", "initialized"), admin);
     }
 
     /// Returns the current admin address.
@@ -77,6 +77,28 @@ impl RewardsContract {
     /// Returns `true` if the contract has been initialised.
     pub fn is_initialized(env: Env) -> bool {
         env.storage().instance().has(&DataKey::Initialized)
+    }
+
+    /// Registers a new reward account for `participant`.
+    ///
+    /// The caller must be the participant themselves — they authorise their own
+    /// registration. Default values (all zeros) are stored for balance,
+    /// lifetime earned, and lifetime claimed.
+    ///
+    /// # Errors
+    /// Panics with `NotInitialized` if the contract has not been initialised.
+    /// Panics with `AccountAlreadyRegistered` if the account already exists.
+    pub fn register_account(env: Env, participant: Address) {
+        participant.require_auth();
+        match register_reward_account(&env, &participant) {
+            Ok(()) => {}
+            Err(e) => panic_with_error!(&env, e),
+        }
+    }
+
+    /// Returns the `RewardAccount` metadata for `participant`, if registered.
+    pub fn get_account(env: Env, participant: Address) -> Option<RewardAccount> {
+        get_reward_account(&env, &participant)
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────

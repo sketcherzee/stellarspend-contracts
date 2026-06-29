@@ -63,8 +63,6 @@ fn e2e_security_unauthorized_withdrawals_are_rejected() {
     // an empty approver set.
 }
 
-
-
 #[test]
 fn e2e_security_privilege_escalation_is_blocked() {
     let env = Env::default();
@@ -116,4 +114,3 @@ fn e2e_security_budget_and_goal_boundaries_sanity() {
     let b = Address::generate(&env);
     assert_ne!(a, b);
 }
-

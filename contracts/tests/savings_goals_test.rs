@@ -95,7 +95,9 @@ fn test_goal_creation_contribution_and_milestones() {
         target,
         target * 25 / 100,
     ));
-    let batch_result = ctx.goals_client.batch_set_savings_goals(&ctx.admin, &requests);
+    let batch_result = ctx
+        .goals_client
+        .batch_set_savings_goals(&ctx.admin, &requests);
     assert_eq!(batch_result.successful, 1);
 
     // Verify milestone at 25% was auto-triggered by initial contribution
@@ -103,21 +105,27 @@ fn test_goal_creation_contribution_and_milestones() {
     assert!(triggered.contains(&25), "25% milestone should be triggered");
 
     // Contribute to reach 50%
-    ctx.goals_client.contribute_to_goal(&user, &1, &(target * 25 / 100));
+    ctx.goals_client
+        .contribute_to_goal(&user, &1, &(target * 25 / 100));
     let triggered = ctx.goals_client.get_triggered_milestone_percents(&1);
     assert!(triggered.contains(&50), "50% milestone should be triggered");
     assert_eq!(triggered.len(), 2);
 
     // Contribute to reach 75%
-    ctx.goals_client.contribute_to_goal(&user, &1, &(target * 25 / 100));
+    ctx.goals_client
+        .contribute_to_goal(&user, &1, &(target * 25 / 100));
     let triggered = ctx.goals_client.get_triggered_milestone_percents(&1);
     assert!(triggered.contains(&75), "75% milestone should be triggered");
     assert_eq!(triggered.len(), 3);
 
     // Contribute to reach 100%
-    ctx.goals_client.contribute_to_goal(&user, &1, &(target * 25 / 100));
+    ctx.goals_client
+        .contribute_to_goal(&user, &1, &(target * 25 / 100));
     let triggered = ctx.goals_client.get_triggered_milestone_percents(&1);
-    assert!(triggered.contains(&100), "100% milestone should be triggered");
+    assert!(
+        triggered.contains(&100),
+        "100% milestone should be triggered"
+    );
     assert_eq!(triggered.len(), 4);
 
     // Verify goal is complete
@@ -135,14 +143,7 @@ fn test_goal_creation_contribution_and_milestones() {
     assert!(closed_at.is_some(), "Goal should be closed");
 
     // Now test reward claiming via savings contract
-    write_goal_to_savings_storage(
-        &ctx.env,
-        &ctx.savings_contract_id,
-        1,
-        target,
-        target,
-        true,
-    );
+    write_goal_to_savings_storage(&ctx.env, &ctx.savings_contract_id, 1, target, target, true);
 
     let claimed = ctx.savings_client.claim_reward(&user, &1);
     assert_eq!(claimed, reward_amount, "Should claim the set reward amount");
@@ -189,7 +190,10 @@ fn test_incomplete_goal_no_reward() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         ctx.savings_client.claim_reward(&user, &1);
     }));
-    assert!(result.is_err(), "Claim for incomplete goal should be rejected");
+    assert!(
+        result.is_err(),
+        "Claim for incomplete goal should be rejected"
+    );
 }
 
 #[test]
@@ -200,8 +204,16 @@ fn test_milestone_incremental_path() {
 
     // Create a goal with no initial contribution
     let mut requests: Vec<SavingsGoalRequest> = Vec::new(&ctx.env);
-    requests.push_back(create_goal_request(&ctx.env, &user, "incremental", target, 0));
-    let batch_result = ctx.goals_client.batch_set_savings_goals(&ctx.admin, &requests);
+    requests.push_back(create_goal_request(
+        &ctx.env,
+        &user,
+        "incremental",
+        target,
+        0,
+    ));
+    let batch_result = ctx
+        .goals_client
+        .batch_set_savings_goals(&ctx.admin, &requests);
     assert_eq!(batch_result.successful, 1);
 
     // No milestones should be triggered yet
@@ -209,25 +221,29 @@ fn test_milestone_incremental_path() {
     assert_eq!(triggered.len(), 0);
 
     // Contribute 25%
-    ctx.goals_client.contribute_to_goal(&user, &1, &(target * 25 / 100));
+    ctx.goals_client
+        .contribute_to_goal(&user, &1, &(target * 25 / 100));
     let triggered = ctx.goals_client.get_triggered_milestone_percents(&1);
     assert!(triggered.contains(&25));
     assert_eq!(triggered.len(), 1);
 
     // Contribute another 25%
-    ctx.goals_client.contribute_to_goal(&user, &1, &(target * 25 / 100));
+    ctx.goals_client
+        .contribute_to_goal(&user, &1, &(target * 25 / 100));
     let triggered = ctx.goals_client.get_triggered_milestone_percents(&1);
     assert!(triggered.contains(&50));
     assert_eq!(triggered.len(), 2);
 
     // Contribute another 25%
-    ctx.goals_client.contribute_to_goal(&user, &1, &(target * 25 / 100));
+    ctx.goals_client
+        .contribute_to_goal(&user, &1, &(target * 25 / 100));
     let triggered = ctx.goals_client.get_triggered_milestone_percents(&1);
     assert!(triggered.contains(&75));
     assert_eq!(triggered.len(), 3);
 
     // Contribute final 25%
-    ctx.goals_client.contribute_to_goal(&user, &1, &(target * 25 / 100));
+    ctx.goals_client
+        .contribute_to_goal(&user, &1, &(target * 25 / 100));
     let triggered = ctx.goals_client.get_triggered_milestone_percents(&1);
     assert!(triggered.contains(&100));
     assert_eq!(triggered.len(), 4);
