@@ -1,13 +1,14 @@
 #![cfg(test)]
 
 use soroban_sdk::{
+    symbol_short,
     testutils::{Address as _, Events as _, Ledger as _},
     token::{StellarAssetClient, TokenClient},
-    Address, Env,
+    Address, Env, IntoVal, Symbol, TryFromVal,
 };
 
-use crate::{AllowancesContract, AllowancesContractClient};
 use crate::types::{AllowanceError, Frequency};
+use crate::{AllowancesContract, AllowancesContractClient};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -55,7 +56,11 @@ fn setup(
 #[test]
 fn contract_deploys_and_count_starts_at_zero() {
     let (env, client, _, _, _) = setup(1_000);
-    assert_eq!(client.allowance_count(), 0, "fresh contract must start at 0");
+    assert_eq!(
+        client.allowance_count(),
+        0,
+        "fresh contract must start at 0"
+    );
     let _ = env;
 }
 
@@ -165,7 +170,10 @@ fn weekly_distribution_transfers_tokens() {
 
     let a = client.get_allowance(&id);
     assert_eq!(a.distribution_count, 1);
-    assert!(a.active, "weekly allowance must stay active after one distribution");
+    assert!(
+        a.active,
+        "weekly allowance must stay active after one distribution"
+    );
     // Next window should be ~2 weeks from start
     assert!(a.next_distribution > now + 604_800);
 }
@@ -180,7 +188,14 @@ fn weekly_distribute_too_early_is_rejected() {
     let (env, client, owner, recipient, token) = setup(1_000);
     let now = env.ledger().timestamp();
 
-    let id = client.create_allowance(&owner, &recipient, &token, &100, &Frequency::Weekly, &(now + 10_000));
+    let id = client.create_allowance(
+        &owner,
+        &recipient,
+        &token,
+        &100,
+        &Frequency::Weekly,
+        &(now + 10_000),
+    );
 
     let err = client
         .try_distribute(&id)
@@ -210,7 +225,10 @@ fn monthly_distribution_transfers_tokens() {
 
     let a = client.get_allowance(&id);
     assert_eq!(a.distribution_count, 1);
-    assert!(a.active, "monthly allowance must stay active after one distribution");
+    assert!(
+        a.active,
+        "monthly allowance must stay active after one distribution"
+    );
     assert!(a.next_distribution > now + 2_592_000);
 }
 
@@ -225,7 +243,14 @@ fn monthly_distribute_too_early_is_rejected() {
     let now = env.ledger().timestamp();
 
     // Start 30 days in the future
-    let id = client.create_allowance(&owner, &recipient, &token, &100, &Frequency::Monthly, &(now + 2_592_000));
+    let id = client.create_allowance(
+        &owner,
+        &recipient,
+        &token,
+        &100,
+        &Frequency::Monthly,
+        &(now + 2_592_000),
+    );
 
     let err = client
         .try_distribute(&id)
@@ -246,7 +271,10 @@ fn once_allowance_deactivates_after_distribution() {
     client.distribute(&id);
 
     let a = client.get_allowance(&id);
-    assert!(!a.active, "Once allowance must be inactive after distribution");
+    assert!(
+        !a.active,
+        "Once allowance must be inactive after distribution"
+    );
 }
 
 #[test]
